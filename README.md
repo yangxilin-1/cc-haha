@@ -10,12 +10,26 @@
   <img src="docs/00runtime.png" alt="运行截图" width="800">
 </p>
 
+## 目录
+
+- [功能](#功能)
+- [架构概览](#架构概览)
+- [快速开始](#快速开始)
+- [环境变量说明](#环境变量说明)
+- [降级模式](#降级模式)
+- [常见问题](#常见问题)
+- [相对于原始泄露源码的修复](#相对于原始泄露源码的修复)
+- [项目结构](#项目结构)
+- [技术栈](#技术栈)
+
+---
+
 ## 功能
 
 - 完整的 Ink TUI 交互界面（与官方 Claude Code 一致）
 - `--print` 无头模式（脚本/CI 场景）
 - 支持 MCP 服务器、插件、Skills
-- 支持自定义 API 端点和模型
+- 支持自定义 API 端点和模型（[第三方模型使用指南](docs/third-party-models.md)）
 - 降级 Recovery CLI 模式
 
 ---
@@ -87,7 +101,7 @@ bun install
 cp .env.example .env
 ```
 
-编辑 `.env`：
+编辑 `.env`（以下示例使用 [MiniMax](https://platform.minimaxi.com/subscribe/token-plan?code=1TG2Cseab2&source=link) 作为 API 提供商，也可替换为其他兼容服务）：
 
 ```env
 # API 认证（二选一）
@@ -110,6 +124,20 @@ API_TIMEOUT_MS=3000000
 DISABLE_TELEMETRY=1
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 ```
+
+> **提示**：除了 `.env` 文件，你也可以通过 `~/.claude/settings.json` 的 `env` 字段配置环境变量。这与官方 Claude Code 的配置方式一致：
+>
+> ```json
+> {
+>   "env": {
+>     "ANTHROPIC_AUTH_TOKEN": "sk-xxx",
+>     "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+>     "ANTHROPIC_MODEL": "MiniMax-M2.7-highspeed"
+>   }
+> }
+> ```
+>
+> 配置优先级：环境变量 > `.env` 文件 > `~/.claude/settings.json`
 
 ### 4. 启动
 
@@ -268,6 +296,42 @@ src/
 | CLI 解析 | Commander.js |
 | API | Anthropic SDK |
 | 协议 | MCP, LSP |
+
+---
+
+## 常见问题
+
+### Q: `undefined is not an object (evaluating 'usage.input_tokens')`
+
+**原因**：`ANTHROPIC_BASE_URL` 配置不正确，API 端点返回的不是 Anthropic 协议格式的 JSON，而是 HTML 页面或其他格式。
+
+本项目使用 **Anthropic Messages API 协议**，`ANTHROPIC_BASE_URL` 必须指向一个兼容 Anthropic `/v1/messages` 接口的端点。Anthropic SDK 会自动在 base URL 后面拼接 `/v1/messages`，所以：
+
+- MiniMax：`ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic` ✅
+- OpenRouter：`ANTHROPIC_BASE_URL=https://openrouter.ai/api` ✅
+- OpenRouter 错误写法：`ANTHROPIC_BASE_URL=https://openrouter.ai/anthropic` ❌（返回 HTML）
+
+如果你的模型供应商只支持 OpenAI 协议，需要通过 LiteLLM 等代理做协议转换，详见 [第三方模型使用指南](docs/third-party-models.md)。
+
+### Q: `Cannot find package 'bundle'`
+
+```
+error: Cannot find package 'bundle' from '.../claude-code-haha/src/entrypoints/cli.tsx'
+```
+
+**原因**：Bun 版本过低，不支持项目所需的 `bun:bundle` 等内置模块。
+
+**解决**：升级 Bun 到最新版本：
+
+```bash
+bun upgrade
+```
+
+### Q: 怎么接入 OpenAI / DeepSeek / Ollama 等非 Anthropic 模型？
+
+本项目只支持 Anthropic 协议。如果模型供应商不直接支持 Anthropic 协议，需要用 [LiteLLM](https://github.com/BerriAI/litellm) 等代理做协议转换（OpenAI → Anthropic）。
+
+详细配置步骤请参考：[第三方模型使用指南](docs/third-party-models.md)
 
 ---
 

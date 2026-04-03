@@ -10,12 +10,26 @@ A **locally runnable version** repaired from the leaked Claude Code source, with
   <img src="docs/00runtime.png" alt="Runtime screenshot" width="800">
 </p>
 
+## Table of Contents
+
+- [Features](#features)
+- [Architecture Overview](#architecture-overview)
+- [Quick Start](#quick-start)
+- [Environment Variables](#environment-variables)
+- [Fallback Mode](#fallback-mode)
+- [FAQ](#faq)
+- [Fixes Compared with the Original Leaked Source](#fixes-compared-with-the-original-leaked-source)
+- [Project Structure](#project-structure)
+- [Tech Stack](#tech-stack)
+
+---
+
 ## Features
 
 - Full Ink TUI experience (matching the official Claude Code interface)
 - `--print` headless mode for scripts and CI
 - MCP server, plugin, and Skills support
-- Custom API endpoint and model support
+- Custom API endpoint and model support ([Third-Party Models Guide](docs/third-party-models.en.md))
 - Fallback Recovery CLI mode
 
 ---
@@ -87,7 +101,7 @@ Copy the example file and fill in your API key:
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` (the example below uses [MiniMax](https://platform.minimaxi.com/subscribe/token-plan?code=1TG2Cseab2&source=link) as the API provider — you can replace it with any compatible service):
 
 ```env
 # API authentication (choose one)
@@ -110,6 +124,20 @@ API_TIMEOUT_MS=3000000
 DISABLE_TELEMETRY=1
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 ```
+
+> **Tip**: You can also configure environment variables via the `env` field in `~/.claude/settings.json`. This is consistent with the official Claude Code configuration:
+>
+> ```json
+> {
+>   "env": {
+>     "ANTHROPIC_AUTH_TOKEN": "sk-xxx",
+>     "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+>     "ANTHROPIC_MODEL": "MiniMax-M2.7-highspeed"
+>   }
+> }
+> ```
+>
+> Priority: Environment variables > `.env` file > `~/.claude/settings.json`
 
 ### 4. Start
 
@@ -285,6 +313,42 @@ src/
 | CLI parsing | Commander.js |
 | API | Anthropic SDK |
 | Protocols | MCP, LSP |
+
+---
+
+## FAQ
+
+### Q: `undefined is not an object (evaluating 'usage.input_tokens')`
+
+**Cause**: `ANTHROPIC_BASE_URL` is misconfigured. The API endpoint is returning HTML or another non-JSON format instead of a valid Anthropic protocol response.
+
+This project uses the **Anthropic Messages API protocol**. `ANTHROPIC_BASE_URL` must point to an endpoint compatible with Anthropic's `/v1/messages` interface. The Anthropic SDK automatically appends `/v1/messages` to the base URL, so:
+
+- MiniMax: `ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic` ✅
+- OpenRouter: `ANTHROPIC_BASE_URL=https://openrouter.ai/api` ✅
+- OpenRouter (wrong): `ANTHROPIC_BASE_URL=https://openrouter.ai/anthropic` ❌ (returns HTML)
+
+If your model provider only supports the OpenAI protocol, you need a proxy like LiteLLM for protocol translation. See the [Third-Party Models Guide](docs/third-party-models.en.md).
+
+### Q: `Cannot find package 'bundle'`
+
+```
+error: Cannot find package 'bundle' from '.../claude-code-haha/src/entrypoints/cli.tsx'
+```
+
+**Cause**: Your Bun version is too old and doesn't support the required `bun:bundle` built-in module.
+
+**Fix**: Upgrade Bun to the latest version:
+
+```bash
+bun upgrade
+```
+
+### Q: How to use OpenAI / DeepSeek / Ollama or other non-Anthropic models?
+
+This project only supports the Anthropic protocol. If your model provider doesn't natively support the Anthropic protocol, you need a proxy like [LiteLLM](https://github.com/BerriAI/litellm) for protocol translation (OpenAI → Anthropic).
+
+See the [Third-Party Models Guide](docs/third-party-models.en.md) for detailed setup instructions.
 
 ---
 
