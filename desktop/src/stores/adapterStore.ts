@@ -2,6 +2,16 @@ import { create } from 'zustand'
 import { adaptersApi } from '../api/adapters'
 import type { AdapterFileConfig } from '../types/adapter'
 
+const SAFE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+const CODE_LENGTH = 6
+const CODE_TTL_MS = 60 * 60 * 1000 // 60 minutes
+
+function generateCode(): string {
+  const array = new Uint8Array(CODE_LENGTH)
+  crypto.getRandomValues(array)
+  return Array.from(array, (b) => SAFE_ALPHABET[b % SAFE_ALPHABET.length]).join('')
+}
+
 type AdapterStore = {
   config: AdapterFileConfig
   isLoading: boolean
@@ -9,9 +19,11 @@ type AdapterStore = {
 
   fetchConfig: () => Promise<void>
   updateConfig: (patch: Partial<AdapterFileConfig>) => Promise<void>
+  generatePairingCode: () => Promise<string>
+  removePairedUser: (platform: 'telegram' | 'feishu', userId: string | number) => Promise<void>
 }
 
-export const useAdapterStore = create<AdapterStore>((set) => ({
+export const useAdapterStore = create<AdapterStore>((set, get) => ({
   config: {},
   isLoading: false,
   error: null,
@@ -28,8 +40,34 @@ export const useAdapterStore = create<AdapterStore>((set) => ({
   },
 
   updateConfig: async (patch) => {
-    // PUT returns the merged masked config — no need for a separate GET
     const config = await adaptersApi.updateConfig(patch)
     set({ config })
+  },
+
+  generatePairingCode: async () => {
+    const code = generateCode()
+    const now = Date.now()
+    await get().updateConfig({
+      pairing: {
+        code,
+        expiresAt: now + CODE_TTL_MS,
+        createdAt: now,
+      },
+    })
+    return code
+  },
+
+  removePairedUser: async (platform, userId) => {
+    const { config } = get()
+    const platformConfig = config[platform]
+    if (!platformConfig) return
+
+    const pairedUsers = (platformConfig.pairedUsers ?? []).filter(
+      (u) => String(u.userId) !== String(userId),
+    )
+
+    await get().updateConfig({
+      [platform]: { ...platformConfig, pairedUsers },
+    })
   },
 }))
