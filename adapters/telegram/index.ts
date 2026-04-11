@@ -21,6 +21,10 @@ import {
 import { SessionStore } from '../common/session-store.js'
 import { AdapterHttpClient } from '../common/http-client.js'
 import { isAllowedUser, tryPair } from '../common/pairing.js'
+import { TelegramMediaService } from './media.js'
+import { AttachmentStore } from '../common/attachment/attachment-store.js'
+import { checkAttachmentLimit } from '../common/attachment/attachment-limits.js'
+import type { AttachmentRef } from '../common/ws-bridge.js'
 
 const TELEGRAM_TEXT_LIMIT = 4000 // leave margin below 4096
 
@@ -37,6 +41,11 @@ const bridge = new WsBridge(config.serverUrl, 'tg')
 const dedup = new MessageDedup()
 const sessionStore = new SessionStore()
 const httpClient = new AdapterHttpClient(config.serverUrl)
+const attachmentStore = new AttachmentStore()
+const media = new TelegramMediaService(bot, attachmentStore)
+attachmentStore.gc().catch((err) => {
+  console.warn('[Telegram] AttachmentStore.gc failed:', err instanceof Error ? err.message : err)
+})
 
 // Track placeholder messages for streaming updates
 const placeholders = new Map<string, { chatId: string; messageId: number }>()
@@ -480,48 +489,134 @@ bot.command('clear', (ctx) => {
   })()
 })
 
-bot.on('message:text', (ctx) => {
-  if (!ctx.from) return
-
-  // 只处理私聊
-  if (ctx.chat.type !== 'private') return
-
-  if (!dedup.tryRecord(String(ctx.message.message_id))) return
+/** Shared per-user-message pipeline: dedup, pairing check, project-pick
+ *  routing, enqueue, ensureSession, sendUserMessage with attachments.
+ *  Caller has already extracted text and attachments from the context. */
+async function routeUserMessage(
+  ctx: Context,
+  text: string,
+  attachments: AttachmentRef[],
+): Promise<void> {
+  if (!ctx.from || ctx.chat?.type !== 'private') return
+  if (!dedup.tryRecord(String(ctx.message?.message_id))) return
 
   const chatId = String(ctx.chat.id)
   const userId = ctx.from.id
-  const text = ctx.message.text
 
-  // 检查配对状态
   if (!isAllowedUser('telegram', userId)) {
-    // 尝试配对
     const displayName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ')
     const success = tryPair(text.trim(), { userId, displayName }, 'telegram')
     if (success) {
-      ctx.reply('✅ 配对成功！现在可以开始聊天了。\n\n发送消息即可与 Claude 对话。')
+      await ctx.reply('✅ 配对成功！现在可以开始聊天了。\n\n发送消息即可与 Claude 对话。')
     } else {
-      ctx.reply('🔒 未授权。请在 Claude Code 桌面端生成配对码后发送给我。')
+      await ctx.reply('🔒 未授权。请在 Claude Code 桌面端生成配对码后发送给我。')
     }
     return
   }
 
   enqueue(chatId, async () => {
-    // Project selection pending — treat input as /new <query>
     if (pendingProjectSelection.has(chatId)) {
-      await startNewSession(chatId, text.trim())
+      if (text.trim()) await startNewSession(chatId, text.trim())
       return
     }
-
-    // Normal message flow
     const ready = await ensureSession(chatId)
-    if (ready) {
-      const sent = bridge.sendUserMessage(chatId, text)
-      if (!sent) {
-        await bot.api.sendMessage(Number(chatId), '⚠️ 消息发送失败，连接可能已断开。请发送 /new 重新开始。')
-      }
+    if (!ready) return
+    const effective =
+      text || (attachments.length > 0 ? '(用户发送了附件)' : '')
+    if (!effective && attachments.length === 0) return
+    const sent = bridge.sendUserMessage(chatId, effective, attachments.length ? attachments : undefined)
+    if (!sent) {
+      await bot.api.sendMessage(Number(chatId), '⚠️ 消息发送失败，连接可能已断开。请发送 /new 重新开始。')
     }
   })
+}
+
+/** Scan ctx.message for photo/document/video/audio/voice, download
+ *  each via TelegramMediaService, apply size/mime limits, and produce
+ *  a ready-to-send AttachmentRef[] plus any rejection hints. */
+async function collectAttachmentsFromCtx(
+  ctx: Context,
+): Promise<{ attachments: AttachmentRef[]; rejections: string[] }> {
+  const msg = ctx.message
+  if (!msg || !ctx.chat) return { attachments: [], rejections: [] }
+  const sessionId = sessionStore.get(String(ctx.chat.id))?.sessionId ?? String(ctx.chat.id)
+  const attachments: AttachmentRef[] = []
+  const rejections: string[] = []
+
+  const runOne = async (
+    fileId: string,
+    fileName?: string,
+    mimeType?: string,
+  ): Promise<void> => {
+    try {
+      const local = await media.downloadFile(fileId, sessionId, { fileName, mimeType })
+      const check = checkAttachmentLimit(local.kind, local.size, local.mimeType)
+      if (!check.ok) {
+        rejections.push(check.hint)
+        return
+      }
+      if (local.kind === 'image') {
+        attachments.push({
+          type: 'image',
+          name: local.name,
+          data: local.buffer.toString('base64'),
+          mimeType: local.mimeType,
+        })
+      } else {
+        attachments.push({
+          type: 'file',
+          name: local.name,
+          path: local.path,
+          mimeType: local.mimeType,
+        })
+      }
+    } catch (err) {
+      console.error('[Telegram] downloadFile failed:', err)
+      rejections.push('📎 附件下载失败')
+    }
+  }
+
+  // Photos: grammY exposes an array of sizes, largest last.
+  if (msg.photo && msg.photo.length > 0) {
+    const largest = msg.photo[msg.photo.length - 1]!
+    await runOne(largest.file_id, `photo-${largest.file_unique_id}.jpg`, 'image/jpeg')
+  }
+  if (msg.document) {
+    await runOne(msg.document.file_id, msg.document.file_name, msg.document.mime_type)
+  }
+  if (msg.video) {
+    await runOne(msg.video.file_id, msg.video.file_name, msg.video.mime_type)
+  }
+  if (msg.audio) {
+    await runOne(msg.audio.file_id, msg.audio.file_name, msg.audio.mime_type)
+  }
+  if (msg.voice) {
+    await runOne(
+      msg.voice.file_id,
+      `voice-${msg.voice.file_unique_id}.ogg`,
+      msg.voice.mime_type ?? 'audio/ogg',
+    )
+  }
+
+  return { attachments, rejections }
+}
+
+bot.on('message:text', async (ctx) => {
+  await routeUserMessage(ctx, ctx.message.text, [])
 })
+
+bot.on(
+  ['message:photo', 'message:document', 'message:video', 'message:audio', 'message:voice'],
+  async (ctx) => {
+    const caption = ctx.message.caption ?? ''
+    const { attachments, rejections } = await collectAttachmentsFromCtx(ctx)
+    for (const r of rejections) {
+      await ctx.reply(r).catch(() => {})
+    }
+    if (attachments.length === 0 && !caption.trim()) return
+    await routeUserMessage(ctx, caption, attachments)
+  },
+)
 
 bot.on('callback_query:data', async (ctx) => {
   const data = ctx.callbackQuery.data
