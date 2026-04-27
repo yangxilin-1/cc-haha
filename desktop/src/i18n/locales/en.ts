@@ -850,6 +850,11 @@ export const en = {
 
   // ─── App Shell ──────────────────────────────────────
   'app.serverFailed': 'Local server failed to start',
+  'app.serverFailedHint': 'Please include a screenshot of this diagnostic panel when reporting the issue.',
+  'app.startupError': 'Startup error',
+  'app.serverLogs': 'Server logs',
+  'app.copyDiagnostics': 'Copy diagnostics',
+  'app.copiedDiagnostics': 'Copied',
   'app.launching': 'Launching local workspace...',
 
   // ─── Error Codes ──────────────────────────────────────

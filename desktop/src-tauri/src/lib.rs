@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{Error as IoError, ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
@@ -7,7 +7,7 @@ use std::{
     str,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -23,6 +23,8 @@ use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
 };
+
+const SERVER_STARTUP_LOG_LIMIT: usize = 80;
 
 #[derive(Default)]
 struct ServerState(Mutex<ServerStatus>);
@@ -546,6 +548,32 @@ fn wait_for_server(url_host: &str, port: u16) -> Result<(), String> {
     ))
 }
 
+fn push_server_startup_log(logs: &Arc<Mutex<VecDeque<String>>>, line: String) {
+    let line = line.trim_end().to_string();
+    if line.is_empty() {
+        return;
+    }
+
+    let Ok(mut guard) = logs.lock() else {
+        return;
+    };
+    if guard.len() >= SERVER_STARTUP_LOG_LIMIT {
+        guard.pop_front();
+    }
+    guard.push_back(line);
+}
+
+fn format_server_startup_error(message: &str, logs: &Arc<Mutex<VecDeque<String>>>) -> String {
+    let log_text = logs
+        .lock()
+        .ok()
+        .map(|guard| guard.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| "No server stdout/stderr was captured before the timeout.".to_string());
+
+    format!("{message}\n\nRecent server logs:\n{log_text}")
+}
+
 fn resolve_app_root(_app: &AppHandle) -> Result<PathBuf, String> {
     // 历史用途：此前 sidecar launcher 用 dynamic file:// import 加载磁盘上
     // 的 src/server/index.ts 和 preload.ts，所以 Tauri 必须把整个 src/ +
@@ -589,6 +617,9 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
             &port.to_string(),
         ]);
 
+    let startup_logs = Arc::new(Mutex::new(VecDeque::new()));
+    let logs_for_task = Arc::clone(&startup_logs);
+
     let (mut rx, child) = sidecar
         .spawn()
         .map_err(|err| format!("spawn server sidecar: {err}"))?;
@@ -598,18 +629,33 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
             match event {
                 CommandEvent::Stdout(line) => {
                     let line = String::from_utf8_lossy(&line);
-                    println!("[claude-server] {}", line.trim_end());
+                    let line = line.trim_end();
+                    println!("[claude-server] {line}");
+                    push_server_startup_log(&logs_for_task, format!("[stdout] {line}"));
                 }
                 CommandEvent::Stderr(line) => {
                     let line = String::from_utf8_lossy(&line);
-                    eprintln!("[claude-server] {}", line.trim_end());
+                    let line = line.trim_end();
+                    eprintln!("[claude-server] {line}");
+                    push_server_startup_log(&logs_for_task, format!("[stderr] {line}"));
+                }
+                CommandEvent::Terminated(payload) => {
+                    let line = format!(
+                        "sidecar exited (code={:?}, signal={:?})",
+                        payload.code, payload.signal
+                    );
+                    eprintln!("[claude-server] {line}");
+                    push_server_startup_log(&logs_for_task, format!("[exit] {line}"));
                 }
                 _ => {}
             }
         }
     });
 
-    wait_for_server(host, port)?;
+    if let Err(err) = wait_for_server(host, port) {
+        let _ = child.kill();
+        return Err(format_server_startup_error(&err, &startup_logs));
+    }
 
     Ok(ServerRuntime { url, child })
 }
