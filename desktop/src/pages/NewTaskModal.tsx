@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { mockNewTaskDefaults, mockSessions, mockStatusBar } from '../mocks/data'
+import { FolderLineIcon } from '../components/shared/LineIcons'
 
 /**
  * NewTaskModal page -- pixel-perfect replica of the HTML prototype.
@@ -25,7 +26,7 @@ export default function NewTaskModal() {
       <header className="bg-[#FAF9F5] flex justify-between items-center px-6 h-12 w-full z-40">
         <div className="flex items-center gap-6">
           <span className="text-sm font-bold text-[#1B1C1A] uppercase tracking-tighter font-[var(--font-headline)]">
-            Claude Code Companion
+            Ycode Desktop
           </span>
           <nav className="hidden md:flex gap-4 font-[var(--font-headline)] font-semibold tracking-wide text-sm">
             <a className="text-[#87736D] hover:text-[#8F482F] transition-colors cursor-pointer">Code</a>
@@ -245,9 +246,7 @@ export default function NewTaskModal() {
                         className="flex-1 bg-[var(--color-surface-container)] rounded-lg border-none focus:ring-1 focus:ring-[var(--color-primary)] text-sm placeholder:text-[var(--color-outline)]/50 px-4 py-2.5 transition-all outline-none"
                       />
                       <button className="bg-[var(--color-surface-container-high)] px-3 rounded-lg flex items-center justify-center hover:bg-[var(--color-surface-variant)] transition-colors">
-                        <span className="material-symbols-outlined text-[var(--color-on-surface-variant)] text-sm">
-                          folder_open
-                        </span>
+                        <FolderLineIcon size={16} className="text-[var(--color-on-surface-variant)]" />
                       </button>
                     </div>
                   </div>

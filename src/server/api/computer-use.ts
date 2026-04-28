@@ -6,50 +6,46 @@
  *   POST /api/computer-use/setup   — 创建 venv 并安装依赖
  */
 
-import { homedir } from 'os'
 import { join } from 'path'
 import { access, readFile, mkdir, writeFile } from 'fs/promises'
 import { createHash } from 'crypto'
-import path from 'path'
-import { fileURLToPath } from 'url'
-import type { CuPermissionRequest } from '../../vendor/computer-use-mcp/types.js'
+import { homedir } from 'os'
+import {
+  type AppGrant,
+  type CuGrantFlags,
+  type CuPermissionRequest,
+  type CuPermissionResponse,
+} from '../../vendor/computer-use-mcp/index.js'
 import { computerUseApprovalService } from '../services/computerUseApprovalService.js'
 import { detectPythonRuntime } from './computer-use-python.js'
-import { DEFAULT_DESKTOP_GRANT_FLAGS } from '../../utils/computerUse/preauthorizedConfig.js'
+import { filterAppsForSettings, type SettingsAppLike } from '../../utils/computerUse/appNames.js'
+import {
+  COMPUTER_WIDE_ACCESS_BUNDLE_ID,
+  COMPUTER_WIDE_ACCESS_DISPLAY_NAME,
+  DEFAULT_DESKTOP_GRANT_FLAGS,
+  normalizeStoredAppKey,
+  resolveStoredComputerUseConfig,
+  type StoredComputerUseConfig,
+} from '../../utils/computerUse/preauthorizedConfig.js'
+import { getComputerUseRuntimeRoot } from '../../utils/computerUse/runtimePaths.js'
 // Embed helper scripts at compile time so they're available in bundled mode
 // @ts-ignore — Bun text import
 import MAC_HELPER_CONTENT from '../../../runtime/mac_helper.py' with { type: 'text' }
 // @ts-ignore — Bun text import
 import WIN_HELPER_CONTENT from '../../../runtime/win_helper.py' with { type: 'text' }
+// @ts-ignore — Bun text import
+import REQUIREMENTS_DARWIN_CONTENT from '../../../runtime/requirements.txt' with { type: 'text' }
+// @ts-ignore — Bun text import
+import REQUIREMENTS_WIN_CONTENT from '../../../runtime/requirements-win.txt' with { type: 'text' }
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const projectRoot = path.resolve(__dirname, '../../..')
-const devRuntimeRoot = join(projectRoot, 'runtime')
-const claudeHome = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-const runtimeStateRoot = join(claudeHome, '.runtime')
+import { getAppDataDir } from '../utils/paths.js'
+
+const runtimeStateRoot = getComputerUseRuntimeRoot()
 const venvRoot = join(runtimeStateRoot, 'venv')
 const installStampPath = join(runtimeStateRoot, 'requirements.sha256')
 
-// Embedded content of requirements — platform-specific.
-const REQUIREMENTS_DARWIN = `mss>=10.1.0
-Pillow>=11.3.0
-pyautogui>=0.9.54
-pyobjc-core>=11.1
-pyobjc-framework-Cocoa>=11.1
-pyobjc-framework-Quartz>=11.1
-`
-
-const REQUIREMENTS_WIN32 = `mss>=10.1.0
-Pillow>=11.3.0
-pyautogui>=0.9.54
-pywin32>=306
-psutil>=5.9.0
-pyperclip>=1.8.2
-screeninfo>=0.8.1
-`
-
 const isWindows = process.platform === 'win32'
-const REQUIREMENTS_CONTENT = isWindows ? REQUIREMENTS_WIN32 : REQUIREMENTS_DARWIN
+const REQUIREMENTS_CONTENT = isWindows ? REQUIREMENTS_WIN_CONTENT : REQUIREMENTS_DARWIN_CONTENT
 
 function getPythonCommandEnv(): Record<string, string> | undefined {
   if (!isWindows) return undefined
@@ -108,11 +104,8 @@ async function runCommand(
 }
 
 /**
- * Ensure runtime source files (requirements.txt, mac_helper.py) exist in
- * ~/.claude/.runtime/. In dev mode they are copied from the project's
- * runtime/ directory; in bundled mode requirements.txt is written from the
- * embedded constant and mac_helper.py is copied from the project dir (if
- * available) or skipped (it will already have been extracted on a prior run).
+ * Ensure runtime source files (requirements.txt, platform helper) exist in
+ * the desktop-owned Computer Use runtime directory.
  */
 async function ensureRuntimeFiles(): Promise<void> {
   await mkdir(runtimeStateRoot, { recursive: true })
@@ -245,7 +238,7 @@ async function runSetup(): Promise<SetupResult> {
       : `Python ${pythonRuntime.version}`,
   })
 
-  // Step 2: Extract runtime files to ~/.claude/.runtime/
+  // Step 2: Extract runtime files to the desktop-owned runtime directory
   try {
     await ensureRuntimeFiles()
     steps.push({ name: 'runtime_files', ok: true, message: '运行时文件已就绪' })
@@ -349,10 +342,10 @@ async function runSetup(): Promise<SetupResult> {
 }
 
 // ============================================================================
-// Authorized Apps configuration — stored in ~/.claude/cc-haha/computer-use-config.json
+// Authorized Apps configuration — stored in Ycode data dir computer-use-config.json
 // ============================================================================
 
-const configPath = join(claudeHome, 'cc-haha', 'computer-use-config.json')
+const configPath = join(getAppDataDir(), 'computer-use-config.json')
 
 type AuthorizedApp = {
   bundleId: string
@@ -362,11 +355,8 @@ type AuthorizedApp = {
 
 type ComputerUseConfig = {
   authorizedApps: AuthorizedApp[]
-  grantFlags: {
-    clipboardRead: boolean
-    clipboardWrite: boolean
-    systemKeyCombos: boolean
-  }
+  grantFlags: CuGrantFlags
+  computerWideAccess: boolean
 }
 
 type RequestAccessBody = {
@@ -377,39 +367,155 @@ type RequestAccessBody = {
 const DEFAULT_CONFIG: ComputerUseConfig = {
   authorizedApps: [],
   grantFlags: DEFAULT_DESKTOP_GRANT_FLAGS,
+  computerWideAccess: false,
+}
+
+function normalizeAuthorizedApps(apps: unknown): AuthorizedApp[] {
+  if (!Array.isArray(apps)) return []
+  const seen = new Set<string>()
+  const out: AuthorizedApp[] = []
+  for (const item of apps) {
+    if (typeof item !== 'object' || item === null) continue
+    const app = item as Partial<AuthorizedApp>
+    const bundleId = String(app.bundleId ?? '').trim()
+    const displayName = String(app.displayName ?? '').trim()
+    const key = normalizeStoredAppKey(bundleId)
+    if (!bundleId || !displayName || !key || seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      bundleId,
+      displayName,
+      authorizedAt:
+        typeof app.authorizedAt === 'string'
+          ? app.authorizedAt
+          : new Date(0).toISOString(),
+    })
+  }
+  return out
 }
 
 async function loadConfig(): Promise<ComputerUseConfig> {
+  let parsed: StoredComputerUseConfig | undefined
   try {
     const raw = await readFile(configPath, 'utf8')
-    return { ...DEFAULT_CONFIG, ...JSON.parse(raw) }
+    parsed = JSON.parse(raw) as StoredComputerUseConfig
   } catch {
-    return { ...DEFAULT_CONFIG }
+    parsed = undefined
+  }
+
+  const resolved = resolveStoredComputerUseConfig(parsed)
+  const authorizedApps = normalizeAuthorizedApps(parsed?.authorizedApps)
+
+  return {
+    ...DEFAULT_CONFIG,
+    authorizedApps,
+    grantFlags: resolved.grantFlags,
+    computerWideAccess: resolved.computerWideAccess,
   }
 }
 
 async function saveConfig(config: ComputerUseConfig): Promise<void> {
-  await writeFile(configPath, JSON.stringify(config, null, 2), 'utf8')
+  await mkdir(getAppDataDir(), { recursive: true })
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      ...config,
+      authorizedApps: normalizeAuthorizedApps(config.authorizedApps),
+    }, null, 2),
+    'utf8',
+  )
 }
 
-async function listInstalledApps(): Promise<{ bundleId: string; displayName: string; path: string }[]> {
+type InstalledAppForSettings = SettingsAppLike & {
+  iconDataUrl?: string
+}
+
+async function runHelperCommand<T>(
+  command: string,
+  payload: Record<string, unknown> = {},
+): Promise<T | undefined> {
   const helperPath = getHelperPath()
   const pythonBin = isWindows
     ? join(venvRoot, 'Scripts', 'python.exe')
     : join(venvRoot, 'bin', 'python3')
 
   if (!(await pathExists(pythonBin)) || !(await pathExists(helperPath))) {
-    return []
+    return undefined
   }
 
-  const result = await runCommand(pythonBin, [helperPath, 'list_installed_apps'])
-  if (!result.ok) return []
+  const args = [helperPath, command]
+  if (Object.keys(payload).length > 0) {
+    args.push('--payload', JSON.stringify(payload))
+  }
+  const result = await runCommand(pythonBin, args)
+  if (!result.ok) return undefined
 
   try {
     const parsed = JSON.parse(result.stdout)
-    return parsed.ok ? parsed.result : []
+    return parsed.ok ? parsed.result as T : undefined
   } catch {
-    return []
+    return undefined
+  }
+}
+
+async function listInstalledApps(): Promise<InstalledAppForSettings[]> {
+  await ensureRuntimeFiles().catch(() => undefined)
+
+  const raw = await runHelperCommand<Array<{ bundleId: string; displayName: string; path: string }>>(
+    'list_installed_apps',
+  )
+  if (!raw) return []
+
+  const apps = filterAppsForSettings(raw, homedir())
+  const iconTargets = apps
+    .filter(app => app.path)
+    .slice(0, 80)
+    .map(app => ({ bundleId: app.bundleId, path: app.path }))
+
+  if (iconTargets.length === 0) return apps
+
+  const icons = await runHelperCommand<Record<string, string>>(
+    'get_app_icons',
+    { apps: iconTargets },
+  ).catch(() => undefined)
+  if (!icons) return apps
+
+  return apps.map(app => {
+    const iconDataUrl = icons[app.bundleId]
+    return iconDataUrl ? { ...app, iconDataUrl } : app
+  })
+}
+
+function autoGrantComputerWideAccess(
+  request: CuPermissionRequest,
+  flags: CuGrantFlags,
+): CuPermissionResponse {
+  const now = Date.now()
+  const universalGrant: AppGrant = {
+    bundleId: COMPUTER_WIDE_ACCESS_BUNDLE_ID,
+    displayName: COMPUTER_WIDE_ACCESS_DISPLAY_NAME,
+    grantedAt: now,
+    tier: 'full',
+  }
+  const resolvedGrants: AppGrant[] = request.apps
+    .filter(app => app.resolved)
+    .map(app => ({
+      bundleId: app.resolved!.bundleId,
+      displayName: app.resolved!.displayName,
+      grantedAt: now,
+      tier: app.proposedTier,
+    }))
+  const denied = request.apps
+    .filter(app => !app.resolved)
+    .map(app => ({
+      bundleId: app.requestedName,
+      reason: 'not_installed' as const,
+    }))
+
+  return {
+    granted: [universalGrant, ...resolvedGrants],
+    denied,
+    flags,
   }
 }
 
@@ -451,12 +557,16 @@ export async function handleComputerUseApi(
     try {
       const body = (await req.json()) as Partial<ComputerUseConfig>
       const config = await loadConfig()
-      if (body.authorizedApps) config.authorizedApps = body.authorizedApps
+      if (body.authorizedApps) config.authorizedApps = normalizeAuthorizedApps(body.authorizedApps)
       if (body.grantFlags) config.grantFlags = { ...config.grantFlags, ...body.grantFlags }
+      if (typeof body.computerWideAccess === 'boolean') {
+        config.computerWideAccess = body.computerWideAccess
+      }
       await saveConfig(config)
       return Response.json({ ok: true })
-    } catch {
-      return Response.json({ error: 'Invalid JSON' }, { status: 400 })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save Computer Use config'
+      return Response.json({ error: 'SAVE_FAILED', message }, { status: 500 })
     }
   }
 
@@ -490,6 +600,11 @@ export async function handleComputerUseApi(
           { error: 'BAD_REQUEST', message: 'sessionId and request are required' },
           { status: 400 },
         )
+      }
+
+      const config = await loadConfig()
+      if (config.computerWideAccess) {
+        return Response.json(autoGrantComputerWideAccess(body.request, config.grantFlags))
       }
 
       const response = await computerUseApprovalService.requestApproval(

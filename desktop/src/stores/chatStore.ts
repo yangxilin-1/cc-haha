@@ -3,9 +3,8 @@ import { wsManager } from '../api/websocket'
 import { sessionsApi } from '../api/sessions'
 import { useTeamStore } from './teamStore'
 import { useSessionStore } from './sessionStore'
-import { useCLITaskStore } from './cliTaskStore'
+import { useDesktopTaskStore } from './desktopTaskStore'
 import { useTabStore } from './tabStore'
-import { randomSpinnerVerb } from '../config/spinnerVerbs'
 import { AGENT_LIFECYCLE_TYPES } from '../types/team'
 import type { MessageEntry } from '../types/session'
 import type { PermissionMode } from '../types/settings'
@@ -81,6 +80,7 @@ type ChatStore = {
   connectToSession: (sessionId: string) => void
   disconnectSession: (sessionId: string) => void
   sendMessage: (sessionId: string, content: string, attachments?: AttachmentRef[]) => void
+  rollbackPatch: (sessionId: string, originalToolUseId: string, reversePatch: string) => void
   respondToPermission: (
     sessionId: string,
     requestId: string,
@@ -108,9 +108,21 @@ const pendingTaskToolUseIds = new Set<string>()
 let msgCounter = 0
 const nextId = () => `msg-${++msgCounter}-${Date.now()}`
 
-// Streaming throttle for content_delta
-let pendingDelta = ''
-let flushTimer: ReturnType<typeof setTimeout> | null = null
+// Streaming throttle for content_delta. Keep buffers per session so parallel
+// chats cannot steal or flush each other's text.
+const pendingDeltas = new Map<string, string>()
+const flushTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function consumePendingDelta(sessionId: string): string {
+  const timer = flushTimers.get(sessionId)
+  if (timer) {
+    clearTimeout(timer)
+    flushTimers.delete(sessionId)
+  }
+  const text = pendingDeltas.get(sessionId) ?? ''
+  pendingDeltas.delete(sessionId)
+  return text
+}
 
 /** Helper: immutably update a specific session within the sessions record */
 function updateSessionIn(
@@ -129,7 +141,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   getSession: (sessionId) => get().sessions[sessionId] ?? createDefaultSessionState(),
 
   connectToSession: (sessionId) => {
-    void useCLITaskStore.getState().fetchSessionTasks(sessionId)
+    void useDesktopTaskStore.getState().fetchSessionTasks(sessionId)
 
     const existing = get().sessions[sessionId]
     if (existing && existing.connectionState !== 'disconnected') return
@@ -171,11 +183,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   disconnectSession: (sessionId) => {
     const session = get().sessions[sessionId]
     if (session?.elapsedTimer) clearInterval(session.elapsedTimer)
-    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
-    if (pendingDelta) {
-      const text = pendingDelta
-      pendingDelta = ''
+    {
+      const text = consumePendingDelta(sessionId)
+      if (text) {
       set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, (sess) => ({ streamingText: sess.streamingText + text })) }))
+      }
     }
     wsManager.disconnect(sessionId)
     set((s) => {
@@ -185,7 +197,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   sendMessage: (sessionId, content, attachments?) => {
-    const userFacingContent = content.trim()
+    const userFacingContent = content.trim() ? content : ''
     const isMemberSession = !!useTeamStore.getState().getMemberBySessionId(sessionId)
     const uiAttachments: UIAttachment[] | undefined =
       attachments && attachments.length > 0
@@ -197,7 +209,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           }))
         : undefined
 
-    const taskStore = useCLITaskStore.getState()
+    const taskStore = useDesktopTaskStore.getState()
     const allTasksDone = taskStore.tasks.length > 0 && taskStore.tasks.every((t) => t.status === 'completed')
     const completedTaskSummary = allTasksDone
       ? taskStore.tasks.map((t) => ({ id: t.id, subject: t.subject, status: t.status, activeForm: t.activeForm }))
@@ -209,15 +221,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
     set((s) => {
       const session = s.sessions[sessionId] ?? createDefaultSessionState()
-      if (flushTimer) {
-        clearTimeout(flushTimer)
-        flushTimer = null
-      }
-      const bufferedDelta = pendingDelta
-      pendingDelta = ''
-      const pendingAssistantText = `${session.streamingText}${bufferedDelta}`.trim()
+      const bufferedDelta = consumePendingDelta(sessionId)
+      const pendingAssistantText = `${session.streamingText}${bufferedDelta}`
 
-      const newMessages = pendingAssistantText
+      const newMessages = pendingAssistantText.trim()
         ? [
             ...session.messages,
             {
@@ -236,14 +243,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           timestamp: Date.now(),
         })
       }
-      newMessages.push({
-        id: nextId(),
-        type: 'user_text',
-        content: userFacingContent,
-        attachments: isMemberSession ? undefined : uiAttachments,
-        timestamp: Date.now(),
-        ...(isMemberSession ? { pending: true } : {}),
-      })
+      if (userFacingContent || uiAttachments?.length) {
+        newMessages.push({
+          id: nextId(),
+          type: 'user_text',
+          content: userFacingContent,
+          attachments: isMemberSession ? undefined : uiAttachments,
+          timestamp: Date.now(),
+          ...(isMemberSession ? { pending: true } : {}),
+        })
+      }
 
       if (!isMemberSession && session.elapsedTimer) clearInterval(session.elapsedTimer)
 
@@ -262,7 +271,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             chatState: 'thinking',
             elapsedSeconds: 0,
             streamingText: '',
-            statusVerb: isMemberSession ? '' : randomSpinnerVerb(),
+            statusVerb: '',
             elapsedTimer: timer,
             connectionState: isMemberSession ? 'connected' : session.connectionState,
           },
@@ -292,7 +301,18 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       return
     }
 
+    useTabStore.getState().updateTabStatus(sessionId, 'running')
     wsManager.send(sessionId, { type: 'user_message', content, attachments })
+  },
+
+  rollbackPatch: (sessionId, originalToolUseId, reversePatch) => {
+    if (!sessionId || !originalToolUseId || !reversePatch.trim()) return
+
+    wsManager.send(sessionId, {
+      type: 'rollback_patch',
+      originalToolUseId,
+      reversePatch,
+    })
   },
 
   respondToPermission: (sessionId, requestId, allowed, options) => {
@@ -327,11 +347,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   stopGeneration: (sessionId) => {
     wsManager.send(sessionId, { type: 'stop_generation' })
-    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
-    if (pendingDelta) {
-      const text = pendingDelta
-      pendingDelta = ''
+    {
+      const text = consumePendingDelta(sessionId)
+      if (text) {
       set((s) => ({ sessions: updateSessionIn(s.sessions, sessionId, (sess) => ({ streamingText: sess.streamingText + text })) }))
+      }
     }
     set((s) => {
       const session = s.sessions[sessionId]
@@ -367,11 +387,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       })
       const lastTodos = extractLastTodoWriteFromHistory(messages)
       if (lastTodos && lastTodos.length > 0) {
-        const taskStore = useCLITaskStore.getState()
+        const taskStore = useDesktopTaskStore.getState()
         if (taskStore.tasks.length === 0) taskStore.setTasksFromTodos(lastTodos)
       }
       if (hasUserMessagesAfterTaskCompletion(messages)) {
-        useCLITaskStore.getState().markCompletedAndDismissed()
+        useDesktopTaskStore.getState().markCompletedAndDismissed()
       }
     } catch {
       // Session may not have messages yet
@@ -392,14 +412,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         break
 
       case 'status':
+        {
+          const bufferedDelta = consumePendingDelta(sessionId)
+          if (bufferedDelta) {
+            update((session) => ({ streamingText: session.streamingText + bufferedDelta }))
+          }
+        }
         update((session) => {
-          const pendingText = session.streamingText.trim()
+          const pendingText = session.streamingText
           const shouldFlush = pendingText && session.chatState === 'streaming' && msg.state !== 'streaming'
+          const nextStatusVerb =
+            msg.state === 'idle' || msg.state === 'thinking' || msg.state === 'streaming'
+              ? ''
+              : msg.verb && msg.verb !== 'Thinking'
+                ? msg.verb
+                : session.statusVerb
           return {
             chatState: msg.state,
-            ...(msg.verb && msg.verb !== 'Thinking' ? { statusVerb: msg.verb } : {}),
+            statusVerb: nextStatusVerb,
             ...(msg.tokens ? { tokenUsage: { ...session.tokenUsage, output_tokens: msg.tokens } } : {}),
-            ...(msg.state === 'idle' ? { activeThinkingId: null, statusVerb: '' } : {}),
+            ...(msg.state === 'idle' ? { activeThinkingId: null } : {}),
             ...(shouldFlush ? {
               messages: [...session.messages, { id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() }],
               streamingText: '',
@@ -420,7 +452,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case 'content_start': {
         const session = get().sessions[sessionId]
         if (!session) break
-        const pendingText = session.streamingText.trim()
+        const bufferedDelta = consumePendingDelta(sessionId)
+        const pendingText = `${session.streamingText}${bufferedDelta}`
         if (pendingText) {
           update((s) => ({
             messages: [...s.messages, { id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() }],
@@ -443,23 +476,30 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
       case 'content_delta':
         if (msg.text !== undefined) {
-          pendingDelta += msg.text
-          if (!flushTimer) {
-            flushTimer = setTimeout(() => {
-              const text = pendingDelta
-              pendingDelta = ''
-              flushTimer = null
-              update((s) => ({ streamingText: s.streamingText + text }))
-            }, 50)
+          pendingDeltas.set(sessionId, (pendingDeltas.get(sessionId) ?? '') + msg.text)
+          if (!flushTimers.has(sessionId)) {
+            const timer = setTimeout(() => {
+              const text = pendingDeltas.get(sessionId) ?? ''
+              pendingDeltas.delete(sessionId)
+              flushTimers.delete(sessionId)
+              if (text) update((s) => ({ streamingText: s.streamingText + text }))
+            }, 33)
+            flushTimers.set(sessionId, timer)
           }
         }
         if (msg.toolInput !== undefined) update((s) => ({ streamingToolInput: s.streamingToolInput + msg.toolInput }))
         break
 
       case 'thinking':
+        {
+          const bufferedDelta = consumePendingDelta(sessionId)
+          if (bufferedDelta) {
+            update((session) => ({ streamingText: session.streamingText + bufferedDelta }))
+          }
+        }
         update((s) => {
-          const pendingText = s.streamingText.trim()
-          const base = pendingText
+          const pendingText = s.streamingText
+          const base = pendingText.trim()
             ? [...s.messages, { id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() }]
             : s.messages
           const last = base[base.length - 1]
@@ -490,7 +530,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           activeToolUseId: null, activeToolName: null, activeThinkingId: null, streamingToolInput: '',
         }))
         if (toolName === 'TodoWrite' && Array.isArray((msg.input as any)?.todos)) {
-          useCLITaskStore.getState().setTasksFromTodos((msg.input as any).todos)
+          useDesktopTaskStore.getState().setTasksFromTodos((msg.input as any).todos)
         } else if (TASK_TOOL_NAMES.has(toolName)) {
           const useId = msg.toolUseId || session?.activeToolUseId
           if (useId) pendingTaskToolUseIds.add(useId)
@@ -502,13 +542,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         update((s) => ({
           messages: [...s.messages, {
             id: nextId(), type: 'tool_result', toolUseId: msg.toolUseId,
-            content: msg.content, isError: msg.isError, timestamp: Date.now(), parentToolUseId: msg.parentToolUseId,
+            content: msg.content, isError: msg.isError, timestamp: Date.now(), parentToolUseId: msg.parentToolUseId, metadata: msg.metadata,
           }],
-          chatState: 'thinking', activeThinkingId: null,
+          chatState: 'thinking', activeThinkingId: null, statusVerb: '',
         }))
         if (pendingTaskToolUseIds.has(msg.toolUseId)) {
           pendingTaskToolUseIds.delete(msg.toolUseId)
-          useCLITaskStore.getState().refreshTasks()
+          useDesktopTaskStore.getState().refreshTasks()
         }
         break
 
@@ -555,8 +595,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       case 'message_complete': {
         const session = get().sessions[sessionId]
         if (!session) break
-        const text = session.streamingText
-        if (text) {
+        const bufferedDelta = consumePendingDelta(sessionId)
+        const text = `${session.streamingText}${bufferedDelta}`
+        if (text.trim()) {
           update((s) => ({
             messages: [...s.messages, { id: nextId(), type: 'assistant_text', content: text, timestamp: Date.now() }],
             streamingText: '',
@@ -575,10 +616,16 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       case 'error':
+        {
+          const bufferedDelta = consumePendingDelta(sessionId)
+          if (bufferedDelta) {
+            update((session) => ({ streamingText: session.streamingText + bufferedDelta }))
+          }
+        }
         update((s) => {
-          const pendingText = s.streamingText.trim()
+          const pendingText = s.streamingText
           const newMessages = [...s.messages]
-          if (pendingText) {
+          if (pendingText.trim()) {
             newMessages.push({ id: nextId(), type: 'assistant_text' as const, content: pendingText, timestamp: Date.now() })
           }
           newMessages.push({ id: nextId(), type: 'error', message: msg.message, code: msg.code, timestamp: Date.now() })
@@ -829,7 +876,19 @@ export function mapHistoryMessagesToUiMessages(
         }
         else if (block.type === 'image') attachments.push({ type: 'image', name: block.name || 'image', data: block.source?.data, mimeType: block.mimeType || block.media_type })
         else if (block.type === 'file') attachments.push({ type: 'file', name: block.name || 'file' })
-        else if (block.type === 'tool_result') uiMessages.push({ id: nextId(), type: 'tool_result', toolUseId: block.tool_use_id ?? '', content: block.content, isError: !!block.is_error, timestamp, parentToolUseId: msg.parentToolUseId })
+        else if (block.type === 'tool_result') {
+          const metadata = (block as Record<string, unknown>).metadata
+          uiMessages.push({
+            id: nextId(),
+            type: 'tool_result',
+            toolUseId: block.tool_use_id ?? '',
+            content: block.content,
+            isError: !!block.is_error,
+            timestamp,
+            parentToolUseId: msg.parentToolUseId,
+            metadata: isToolResultMetadata(metadata) ? metadata : undefined,
+          })
+        }
       }
       if (textParts.length > 0 || attachments.length > 0) {
         uiMessages.push({ id: nextId(), type: 'user_text', content: textParts.join('\n'), attachments: attachments.length > 0 ? attachments : undefined, timestamp })
@@ -837,6 +896,10 @@ export function mapHistoryMessagesToUiMessages(
     }
   }
   return uiMessages
+}
+
+function isToolResultMetadata(value: unknown): value is NonNullable<Extract<UIMessage, { type: 'tool_result' }>['metadata']> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function extractLastTodoWriteFromHistory(messages: MessageEntry[]): Array<{ content: string; status: string; activeForm?: string }> | null {

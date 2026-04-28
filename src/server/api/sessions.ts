@@ -1,7 +1,7 @@
 /**
  * Session REST API Routes
  *
- * 提供会话的 CRUD 操作接口，数据来自 CLI 共享的 JSONL 文件。
+ * 提供会话的 CRUD 操作接口，数据由桌面端原生 runtime 管理。
  *
  * Routes:
  *   GET    /api/sessions            — 列出会话
@@ -14,9 +14,9 @@
 
 import { sessionService } from '../services/sessionService.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
-import { getSlashCommands } from '../ws/handler.js'
-import { getCommandName } from '../../commands.js'
-import { getSkillDirCommands } from '../../skills/loadSkillsDir.js'
+import { getDesktopSlashCommands } from '../runtime/DesktopSlashCommands.js'
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 
 export async function handleSessionsApi(
   req: Request,
@@ -81,6 +81,14 @@ export async function handleSessionsApi(
         )
       }
       return await getSessionSlashCommands(sessionId)
+    }
+
+    if (subResource === 'workspace') {
+      return await handleWorkspaceRoute(req, url, segments, sessionId)
+    }
+
+    if (subResource === 'terminal') {
+      return await handleTerminalRoute(req, segments, sessionId)
     }
 
     // Route to conversations handler if sub-resource is 'chat'
@@ -149,9 +157,9 @@ async function getSessionMessages(sessionId: string): Promise<Response> {
 }
 
 async function createSession(req: Request): Promise<Response> {
-  let body: { workDir?: string }
+  let body: { workDir?: string; mode?: string }
   try {
-    body = (await req.json()) as { workDir?: string }
+    body = (await req.json()) as { workDir?: string; mode?: string }
   } catch {
     throw ApiError.badRequest('Invalid JSON body')
   }
@@ -160,7 +168,8 @@ async function createSession(req: Request): Promise<Response> {
     throw ApiError.badRequest('workDir must be a string')
   }
 
-  const result = await sessionService.createSession(body.workDir)
+  const mode = body.mode === 'chat' || body.mode === 'code' ? body.mode : undefined
+  const result = await sessionService.createSession(body.workDir, mode)
   return Response.json(result, { status: 201 })
 }
 
@@ -170,25 +179,633 @@ async function deleteSession(sessionId: string): Promise<Response> {
 }
 
 async function getSessionSlashCommands(sessionId: string): Promise<Response> {
-  const cachedCommands = getSlashCommands(sessionId)
-  if (cachedCommands.length > 0) {
-    return Response.json({ commands: cachedCommands })
+  const session = await sessionService.getSession(sessionId)
+  if (!session) {
+    throw ApiError.notFound(`Session not found: ${sessionId}`)
   }
 
+  return Response.json({ commands: getDesktopSlashCommands(session.mode) })
+}
+
+const MAX_WORKSPACE_ENTRIES = 5_000
+const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024
+const MAX_DIFF_BYTES = 512 * 1024
+const TERMINAL_TIMEOUT_MS = 30_000
+
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.htm': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.ts': 'text/plain; charset=utf-8',
+  '.tsx': 'text/plain; charset=utf-8',
+  '.jsx': 'text/plain; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+}
+
+const TEXT_EXTENSIONS = new Set([
+  '.bat', '.c', '.cmd', '.conf', '.cpp', '.cs', '.css', '.csv', '.env', '.go',
+  '.h', '.html', '.java', '.js', '.json', '.jsx', '.lock', '.log', '.md',
+  '.mjs', '.ps1', '.py', '.rs', '.scss', '.sh', '.sql', '.svg', '.toml',
+  '.ts', '.tsx', '.txt', '.vue', '.xml', '.yaml', '.yml',
+])
+
+async function handleWorkspaceRoute(
+  req: Request,
+  url: URL,
+  segments: string[],
+  sessionId: string,
+): Promise<Response> {
+  const action = segments[4]
+
+  if (action === 'tree' && req.method === 'GET') {
+    return await getWorkspaceTree(sessionId, url)
+  }
+
+  if (action === 'file' && req.method === 'GET') {
+    return await getWorkspaceFile(sessionId, url)
+  }
+
+  if (action === 'changes' && req.method === 'GET') {
+    return await getWorkspaceChanges(sessionId)
+  }
+
+  if (action === 'diff' && req.method === 'GET') {
+    return await getWorkspaceDiff(sessionId, url)
+  }
+
+  if (action === 'reveal' && req.method === 'POST') {
+    return await revealWorkspacePath(req, sessionId)
+  }
+
+  if (action === 'raw' && req.method === 'GET') {
+    const rawPath = segments.slice(5).map((part) => decodeURIComponent(part)).join('/')
+    return await getWorkspaceRawFile(sessionId, rawPath)
+  }
+
+  return Response.json(
+    { error: 'NOT_FOUND', message: 'Unknown workspace route' },
+    { status: 404 },
+  )
+}
+
+async function handleTerminalRoute(
+  req: Request,
+  segments: string[],
+  sessionId: string,
+): Promise<Response> {
+  const action = segments[4]
+  if (action !== 'run' || req.method !== 'POST') {
+    return Response.json(
+      { error: 'NOT_FOUND', message: 'Unknown terminal route' },
+      { status: 404 },
+    )
+  }
+
+  let body: { command?: string; cwd?: string }
+  try {
+    body = (await req.json()) as { command?: string; cwd?: string }
+  } catch {
+    throw ApiError.badRequest('Invalid JSON body')
+  }
+
+  if (!body.command || typeof body.command !== 'string') {
+    throw ApiError.badRequest('command is required')
+  }
+
+  const { root, target } = await resolveWorkspacePath(sessionId, body.cwd)
+  const cwd = target
+  const startedAt = Date.now()
+  const shell = process.platform === 'win32'
+    ? { command: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', body.command] }
+    : { command: process.env.SHELL || '/bin/sh', args: ['-lc', body.command] }
+
+  const proc = Bun.spawn([shell.command, ...shell.args], {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+
+  const stdoutPromise = new Response(proc.stdout).text()
+  const stderrPromise = new Response(proc.stderr).text()
+  const exitedPromise = proc.exited
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Command timed out')), TERMINAL_TIMEOUT_MS)
+  })
+
+  try {
+    const [exitCode, stdout, stderr] = await Promise.race([
+      Promise.all([exitedPromise, stdoutPromise, stderrPromise]),
+      timeoutPromise,
+    ])
+    return Response.json({
+      command: body.command,
+      cwd,
+      root,
+      exitCode,
+      stdout,
+      stderr,
+      durationMs: Date.now() - startedAt,
+    })
+  } catch (error) {
+    proc.kill()
+    return Response.json({
+      command: body.command,
+      cwd,
+      root,
+      exitCode: null,
+      stdout: await stdoutPromise.catch(() => ''),
+      stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+      durationMs: Date.now() - startedAt,
+      timedOut: true,
+    })
+  }
+}
+
+async function getWorkspaceTree(sessionId: string, url: URL): Promise<Response> {
+  const requestedPath = url.searchParams.get('path') || undefined
+  const { root, target, relativePath } = await resolveWorkspacePath(sessionId, requestedPath)
+
+  const stat = await fs.stat(target)
+  if (!stat.isDirectory()) {
+    throw ApiError.badRequest('path must be a directory')
+  }
+
+  const entries = await fs.readdir(target, { withFileTypes: true })
+  const sorted = entries
+    .filter((entry) => entry.name !== '.git')
+    .map((entry) => {
+      const absolutePath = path.join(target, entry.name)
+      const entryRelativePath = toPosixPath(path.relative(root, absolutePath))
+      return {
+        name: entry.name,
+        relativePath: entryRelativePath,
+        isDirectory: entry.isDirectory(),
+        isFile: entry.isFile(),
+      }
+    })
+    .sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+  const visible = sorted.slice(0, MAX_WORKSPACE_ENTRIES)
+
+  return Response.json({
+    root,
+    currentPath: target,
+    relativePath,
+    entries: visible,
+    truncated: sorted.length > MAX_WORKSPACE_ENTRIES,
+    truncatedCount: Math.max(0, sorted.length - MAX_WORKSPACE_ENTRIES),
+  })
+}
+
+async function getWorkspaceFile(sessionId: string, url: URL): Promise<Response> {
+  const requestedPath = url.searchParams.get('path')
+  if (!requestedPath) throw ApiError.badRequest('path is required')
+
+  const { root, target, relativePath } = await resolveWorkspacePath(sessionId, requestedPath)
+  const stat = await fs.stat(target)
+  if (!stat.isFile()) throw ApiError.badRequest('path must be a file')
+  if (stat.size > MAX_TEXT_FILE_BYTES) throw ApiError.badRequest('file is too large to preview')
+
+  const ext = path.extname(target).toLowerCase()
+  const isText = TEXT_EXTENSIONS.has(ext) || (MIME_TYPES[ext] || '').startsWith('text/')
+  if (!isText) {
+    return Response.json({
+      root,
+      relativePath,
+      size: stat.size,
+      mimeType: MIME_TYPES[ext] || 'application/octet-stream',
+      binary: true,
+    })
+  }
+
+  const content = await fs.readFile(target, 'utf-8')
+  return Response.json({
+    root,
+    relativePath,
+    size: stat.size,
+    mimeType: MIME_TYPES[ext] || 'text/plain; charset=utf-8',
+    language: languageFromExtension(ext),
+    content,
+    binary: false,
+  })
+}
+
+async function getWorkspaceRawFile(sessionId: string, requestedPath: string): Promise<Response> {
+  if (!requestedPath) throw ApiError.badRequest('path is required')
+
+  const { target } = await resolveWorkspacePath(sessionId, requestedPath)
+  const stat = await fs.stat(target)
+  if (!stat.isFile()) throw ApiError.badRequest('path must be a file')
+
+  const ext = path.extname(target).toLowerCase()
+  const file = Bun.file(target)
+  return new Response(file, {
+    headers: {
+      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+      'Content-Length': String(stat.size),
+      'Cache-Control': 'no-store',
+      'X-Frame-Options': 'SAMEORIGIN',
+    },
+  })
+}
+
+async function getWorkspaceChanges(sessionId: string): Promise<Response> {
+  const { root } = await resolveWorkspacePath(sessionId)
+  const repo = await getGitRepositoryRoot(root)
+  if (!repo) {
+    return Response.json({
+      root,
+      files: [],
+      hasChanges: false,
+      source: 'none',
+    })
+  }
+
+  const statusResult = await runGit(repo, ['status', '--porcelain=v1', '-z', '--untracked-files=normal'])
+  if (statusResult.exitCode !== 0) {
+    return Response.json({
+      root,
+      files: [],
+      hasChanges: false,
+      source: 'git',
+      error: statusResult.stderr.trim() || 'Unable to read git status',
+    })
+  }
+
+  const files = new Map<string, WorkspaceChangeFile>()
+  for (const entry of parseGitStatus(statusResult.stdout)) {
+    const workspacePath = gitPathToWorkspacePath(repo, root, entry.path)
+    if (!workspacePath) continue
+    const status = classifyGitStatus(entry.xy)
+    files.set(workspacePath, {
+      path: workspacePath,
+      status,
+      indexStatus: entry.xy[0] || ' ',
+      worktreeStatus: entry.xy[1] || ' ',
+      staged: entry.xy[0] !== ' ' && entry.xy[0] !== '?',
+      unstaged: entry.xy[1] !== ' ' || entry.xy === '??',
+      additions: 0,
+      deletions: 0,
+    })
+  }
+
+  const unstagedStats = await getGitNumstat(repo, root, ['diff', '--numstat', '--'])
+  const stagedStats = await getGitNumstat(repo, root, ['diff', '--cached', '--numstat', '--'])
+  for (const stat of [...unstagedStats, ...stagedStats]) {
+    const existing = files.get(stat.path)
+    if (existing) {
+      existing.additions += stat.additions
+      existing.deletions += stat.deletions
+    } else {
+      files.set(stat.path, {
+        path: stat.path,
+        status: 'modified',
+        indexStatus: ' ',
+        worktreeStatus: 'M',
+        staged: false,
+        unstaged: true,
+        additions: stat.additions,
+        deletions: stat.deletions,
+      })
+    }
+  }
+
+  const visible = [...files.values()].sort((a, b) => a.path.localeCompare(b.path))
+  return Response.json({
+    root,
+    files: visible,
+    hasChanges: visible.length > 0,
+    source: 'git',
+  })
+}
+
+async function getWorkspaceDiff(sessionId: string, url: URL): Promise<Response> {
+  const requestedPath = url.searchParams.get('path') || undefined
+  const { root, target, relativePath } = await resolveWorkspacePath(sessionId, requestedPath)
+  const repo = await getGitRepositoryRoot(root)
+
+  if (!repo) {
+    const fallback = requestedPath ? await buildCurrentFileDiff(root, target, relativePath) : ''
+    return Response.json({
+      root,
+      relativePath,
+      diff: fallback,
+      source: 'workspace',
+      truncated: byteLength(fallback) > MAX_DIFF_BYTES,
+    })
+  }
+
+  const args = ['diff', '--no-ext-diff', '--find-renames', '--unified=80', 'HEAD', '--']
+  if (requestedPath) {
+    args.push(toGitPath(path.relative(repo, target)))
+  }
+
+  const diffResult = await runGit(repo, args)
+  let diff = diffResult.stdout
+
+  if (requestedPath && !diff.trim()) {
+    const status = await runGit(repo, ['status', '--porcelain=v1', '-z', '--untracked-files=normal', '--', toGitPath(path.relative(repo, target))])
+    if (status.stdout.startsWith('?? ')) {
+      diff = await buildCurrentFileDiff(root, target, relativePath)
+    }
+  }
+
+  const truncated = byteLength(diff) > MAX_DIFF_BYTES
+  if (truncated) {
+    diff = truncateUtf8(diff, MAX_DIFF_BYTES) + '\n\n# Diff 过大，已截断显示。'
+  }
+
+  return Response.json({
+    root,
+    relativePath,
+    diff,
+    source: 'git',
+    truncated,
+    error: diffResult.exitCode === 0 ? undefined : diffResult.stderr.trim(),
+  })
+}
+
+async function revealWorkspacePath(req: Request, sessionId: string): Promise<Response> {
+  let body: { path?: string } = {}
+  try {
+    body = (await req.json()) as { path?: string }
+  } catch {
+    body = {}
+  }
+
+  if (body.path !== undefined && typeof body.path !== 'string') {
+    throw ApiError.badRequest('path must be a string')
+  }
+
+  const { target } = await resolveWorkspacePath(sessionId, body.path)
+  await fs.stat(target)
+  const opened = await openPathInFileManager(target)
+
+  if (!opened.ok) {
+    return Response.json(
+      { ok: false, path: target, error: opened.error || 'Unable to open folder' },
+      { status: 500 },
+    )
+  }
+
+  return Response.json({ ok: true, path: target })
+}
+
+async function openPathInFileManager(target: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const command = process.platform === 'win32'
+      ? 'explorer.exe'
+      : process.platform === 'darwin'
+        ? 'open'
+        : 'xdg-open'
+    const args = process.platform === 'win32'
+      ? [`/select,${target}`]
+      : process.platform === 'darwin'
+        ? ['-R', target]
+        : [(await fs.stat(target)).isDirectory() ? target : path.dirname(target)]
+
+    Bun.spawn([command, ...args], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+type WorkspaceChangeStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'copied' | 'untracked' | 'changed'
+
+type WorkspaceChangeFile = {
+  path: string
+  status: WorkspaceChangeStatus
+  indexStatus: string
+  worktreeStatus: string
+  staged: boolean
+  unstaged: boolean
+  additions: number
+  deletions: number
+}
+
+type GitResult = {
+  exitCode: number | null
+  stdout: string
+  stderr: string
+}
+
+async function runGit(cwd: string, args: string[], timeoutMs = 8_000): Promise<GitResult> {
+  let proc: ReturnType<typeof Bun.spawn> | null = null
+  try {
+    proc = Bun.spawn(['git', ...args], {
+      cwd,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+  } catch (error) {
+    return {
+      exitCode: null,
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+    }
+  }
+
+  const stdoutPromise = new Response(proc.stdout).text()
+  const stderrPromise = new Response(proc.stderr).text()
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('git command timed out')), timeoutMs)
+  })
+
+  try {
+    const [exitCode, stdout, stderr] = await Promise.race([
+      Promise.all([proc.exited, stdoutPromise, stderrPromise]),
+      timeoutPromise,
+    ])
+    return { exitCode, stdout, stderr }
+  } catch (error) {
+    proc.kill()
+    return {
+      exitCode: null,
+      stdout: await stdoutPromise.catch(() => ''),
+      stderr: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+async function getGitRepositoryRoot(workspaceRoot: string): Promise<string | null> {
+  const result = await runGit(workspaceRoot, ['rev-parse', '--show-toplevel'])
+  if (result.exitCode !== 0) return null
+  const repoRoot = result.stdout.trim()
+  return repoRoot ? path.resolve(repoRoot) : null
+}
+
+function parseGitStatus(stdout: string): Array<{ xy: string; path: string }> {
+  const parts = stdout.split('\0').filter(Boolean)
+  const entries: Array<{ xy: string; path: string }> = []
+  for (let index = 0; index < parts.length; index++) {
+    const record = parts[index] ?? ''
+    if (record.length < 4) continue
+    const xy = record.slice(0, 2)
+    const filePath = record.slice(3)
+    entries.push({ xy, path: filePath })
+    if (xy.includes('R') || xy.includes('C')) index += 1
+  }
+  return entries
+}
+
+function classifyGitStatus(xy: string): WorkspaceChangeStatus {
+  if (xy === '??') return 'untracked'
+  if (xy.includes('R')) return 'renamed'
+  if (xy.includes('C')) return 'copied'
+  if (xy.includes('D')) return 'deleted'
+  if (xy.includes('A')) return 'added'
+  if (xy.includes('M')) return 'modified'
+  return 'changed'
+}
+
+async function getGitNumstat(
+  repoRoot: string,
+  workspaceRoot: string,
+  args: string[],
+): Promise<Array<{ path: string; additions: number; deletions: number }>> {
+  const result = await runGit(repoRoot, args)
+  if (result.exitCode !== 0) return []
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [added, deleted, filePath] = line.split('\t')
+      if (!filePath) return null
+      const workspacePath = gitPathToWorkspacePath(repoRoot, workspaceRoot, normalizeNumstatPath(filePath))
+      if (!workspacePath) return null
+      return {
+        path: workspacePath,
+        additions: Number.parseInt(added ?? '0', 10) || 0,
+        deletions: Number.parseInt(deleted ?? '0', 10) || 0,
+      }
+    })
+    .filter((item): item is { path: string; additions: number; deletions: number } => Boolean(item))
+}
+
+function normalizeNumstatPath(value: string): string {
+  const renameMatch = value.match(/^(.*)\{.* => (.*)\}(.*)$/)
+  if (!renameMatch) return value
+  return `${renameMatch[1] ?? ''}${renameMatch[2] ?? ''}${renameMatch[3] ?? ''}`
+}
+
+function gitPathToWorkspacePath(repoRoot: string, workspaceRoot: string, gitPath: string): string | null {
+  const absolute = path.resolve(repoRoot, fromGitPath(gitPath))
+  const relative = path.relative(workspaceRoot, absolute)
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null
+  return toPosixPath(relative)
+}
+
+function fromGitPath(value: string): string {
+  return value.split('/').join(path.sep)
+}
+
+function toGitPath(value: string): string {
+  return value.split(path.sep).join('/')
+}
+
+async function buildCurrentFileDiff(root: string, target: string, relativePath: string): Promise<string> {
+  try {
+    const stat = await fs.stat(target)
+    if (!stat.isFile()) return ''
+    if (stat.size > MAX_DIFF_BYTES) {
+      return `--- /dev/null\n+++ b/${relativePath}\n@@ -0,0 +1 @@\n+文件过大，审查视图已省略内容。`
+    }
+    const ext = path.extname(target).toLowerCase()
+    const isText = TEXT_EXTENSIONS.has(ext) || (MIME_TYPES[ext] || '').startsWith('text/')
+    if (!isText) {
+      return `--- /dev/null\n+++ b/${relativePath}\n@@ -0,0 +1 @@\n+二进制文件，无法在审查视图中显示内容。`
+    }
+    const content = await fs.readFile(target, 'utf-8')
+    const lines = content.split(/\r?\n/)
+    const body = lines.map((line) => `+${line}`).join('\n')
+    return `--- /dev/null\n+++ b/${toPosixPath(path.relative(root, target))}\n@@ -0,0 +1,${lines.length} @@\n${body}`
+  } catch {
+    return ''
+  }
+}
+
+function byteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const encoder = new TextEncoder()
+  let bytes = 0
+  let output = ''
+  for (const char of value) {
+    const length = encoder.encode(char).byteLength
+    if (bytes + length > maxBytes) break
+    output += char
+    bytes += length
+  }
+  return output
+}
+
+async function resolveWorkspacePath(
+  sessionId: string,
+  requestedPath?: string | null,
+): Promise<{ root: string; target: string; relativePath: string }> {
   const workDir = await sessionService.getSessionWorkDir(sessionId)
   if (!workDir) {
     throw ApiError.notFound(`Session not found: ${sessionId}`)
   }
 
-  const commands = await getSkillDirCommands(workDir)
-  const slashCommands = commands
-    .filter((command) => command.userInvocable !== false)
-    .map((command) => ({
-      name: getCommandName(command),
-      description: command.description || '',
-    }))
+  const root = path.resolve(workDir)
+  const target = requestedPath
+    ? path.resolve(path.isAbsolute(requestedPath) ? requestedPath : path.join(root, requestedPath))
+    : root
+  const relative = path.relative(root, target)
 
-  return Response.json({ commands: slashCommands })
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw ApiError.badRequest('path is outside the workspace')
+  }
+
+  return {
+    root,
+    target,
+    relativePath: toPosixPath(relative),
+  }
+}
+
+function toPosixPath(value: string): string {
+  return value.split(path.sep).join('/')
+}
+
+function languageFromExtension(ext: string): string {
+  const normalized = ext.replace(/^\./, '')
+  const known: Record<string, string> = {
+    htm: 'html',
+    js: 'javascript',
+    mjs: 'javascript',
+    ts: 'typescript',
+    tsx: 'tsx',
+    jsx: 'jsx',
+    md: 'markdown',
+    py: 'python',
+    rs: 'rust',
+    sh: 'bash',
+    ps1: 'powershell',
+    yml: 'yaml',
+  }
+  return known[normalized] || normalized || 'text'
 }
 
 async function getGitInfo(sessionId: string): Promise<Response> {

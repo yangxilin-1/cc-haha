@@ -254,7 +254,7 @@ describe('Models API', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.models).toBeArray()
-    expect(body.models.length).toBe(4)
+    expect(body.models.length).toBe(3)
     expect(body.models[0].id).toContain('claude')
   })
 
@@ -264,7 +264,7 @@ describe('Models API', () => {
 
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.model.id).toBe('claude-sonnet-4-6')
+    expect(body.model.id).toBe('claude-opus-4-7')
   })
 
   it('PUT /api/models/current should switch model', async () => {

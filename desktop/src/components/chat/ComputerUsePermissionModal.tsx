@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from '../../i18n'
-import { computerUseApi } from '../../api/computerUse'
+import { computerUseApi, type ComputerUseConfig } from '../../api/computerUse'
 import { useChatStore } from '../../stores/chatStore'
 import type {
   ComputerUsePermissionRequest,
@@ -66,6 +66,48 @@ function buildAllowResponse(
   }
 }
 
+function buildComputerWideAllowResponse(
+  request: ComputerUsePermissionRequest,
+  flags: ComputerUseConfig['grantFlags'],
+): ComputerUsePermissionResponse {
+  const now = Date.now()
+  const resolvedGrants = request.apps.flatMap((app) => {
+    if (!app.resolved) return []
+    return [{
+      bundleId: app.resolved.bundleId,
+      displayName: app.resolved.displayName,
+      grantedAt: now,
+      tier: app.proposedTier,
+    }]
+  })
+
+  const denied = request.apps.flatMap((app) => {
+    if (app.resolved) return []
+    return [{
+      bundleId: app.requestedName,
+      reason: 'not_installed' as const,
+    }]
+  })
+
+  return {
+    granted: [
+      {
+        bundleId: '*',
+        displayName: 'All applications',
+        grantedAt: now,
+        tier: 'full',
+      },
+      ...resolvedGrants,
+    ],
+    denied,
+    flags: {
+      ...DEFAULT_GRANT_FLAGS,
+      ...flags,
+    },
+    userConsented: true,
+  }
+}
+
 export function ComputerUsePermissionModal({ sessionId, request }: Props) {
   const t = useTranslation()
   const respondToComputerUsePermission = useChatStore(
@@ -74,6 +116,10 @@ export function ComputerUsePermissionModal({ sessionId, request }: Props) {
   const [openingPane, setOpeningPane] = useState<
     'Privacy_Accessibility' | 'Privacy_ScreenCapture' | null
   >(null)
+  const [autoApprovalState, setAutoApprovalState] = useState<{
+    requestId: string
+    status: 'checking' | 'show' | 'approved'
+  } | null>(null)
 
   const requestedFlags = useMemo(
     () =>
@@ -85,7 +131,40 @@ export function ComputerUsePermissionModal({ sessionId, request }: Props) {
     [request],
   )
 
+  useEffect(() => {
+    if (!request || request.tccState) {
+      setAutoApprovalState(null)
+      return
+    }
+
+    const requestId = request.requestId
+    let cancelled = false
+    setAutoApprovalState({ requestId, status: 'checking' })
+    void computerUseApi.getAuthorizedApps()
+      .then(config => {
+        if (cancelled) return
+        if (config.computerWideAccess) {
+          respondToComputerUsePermission(
+            sessionId,
+            requestId,
+            buildComputerWideAllowResponse(request, config.grantFlags),
+          )
+          setAutoApprovalState({ requestId, status: 'approved' })
+          return
+        }
+        setAutoApprovalState({ requestId, status: 'show' })
+      })
+      .catch(() => {
+        if (!cancelled) setAutoApprovalState({ requestId, status: 'show' })
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [request, respondToComputerUsePermission, sessionId])
+
   if (!request) return null
+  const tccState = request.tccState
 
   const handleDeny = () => {
     respondToComputerUsePermission(
@@ -114,7 +193,15 @@ export function ComputerUsePermissionModal({ sessionId, request }: Props) {
     }
   }
 
-  const tccState = request.tccState
+  if (
+    !tccState &&
+    (
+      autoApprovalState?.requestId !== request.requestId ||
+      autoApprovalState.status !== 'show'
+    )
+  ) {
+    return null
+  }
 
   return (
     <Modal

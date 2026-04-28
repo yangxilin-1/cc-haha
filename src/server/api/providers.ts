@@ -15,6 +15,7 @@
 
 import { z } from 'zod'
 import { ProviderService } from '../services/providerService.js'
+import { LocalLlamaService } from '../services/localLlamaService.js'
 import { PROVIDER_PRESETS } from '../config/providerPresets.js'
 import {
   CreateProviderSchema,
@@ -60,6 +61,19 @@ export async function handleProvidersApi(
     if (id === 'auth-status' && req.method === 'GET') {
       const status = await providerService.checkAuthStatus()
       return Response.json(status)
+    }
+
+    // GET /api/providers/local-llama
+    if (id === 'local-llama' && !action && req.method === 'GET') {
+      const config = await LocalLlamaService.getPublicConfig()
+      return Response.json({ config })
+    }
+
+    // POST /api/providers/local-llama/start
+    if (id === 'local-llama' && action === 'start' && req.method === 'POST') {
+      await LocalLlamaService.startConfigured({ force: true })
+      const config = await LocalLlamaService.getPublicConfig()
+      return Response.json({ config })
     }
 
     // POST /api/providers/official

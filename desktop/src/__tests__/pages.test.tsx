@@ -23,6 +23,7 @@ import { UserMessage } from '../components/chat/UserMessage'
 import { useChatStore } from '../stores/chatStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useTabStore } from '../stores/tabStore'
+import { useModeStore } from '../stores/modeStore'
 
 /**
  * Core rendering tests: content-only pages must render without crashing
@@ -73,6 +74,19 @@ describe('Content-only pages render without errors', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open composer tools' }))
     expect(screen.getByText('Add files or photos')).toBeInTheDocument()
     expect(screen.getByText('Slash commands')).toBeInTheDocument()
+  })
+
+  it('EmptySession keeps composer tools visible in chat mode', () => {
+    useModeStore.setState({ currentMode: 'chat' })
+
+    render(<EmptySession />)
+
+    expect(screen.getByText('Default permissions')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open composer tools' }))
+    expect(screen.getByText('Add files or photos')).toBeInTheDocument()
+    expect(screen.getByText('Slash commands')).toBeInTheDocument()
+
+    useModeStore.setState({ currentMode: 'code' })
   })
 
   it('ActiveSession renders with chat components', () => {
@@ -170,6 +184,65 @@ describe('Content-only pages render without errors', () => {
     useChatStore.setState({ sessions: {} })
   })
 
+  it('ActiveSession shows session tools for chat sessions', () => {
+    const SESSION_ID = 'test-chat-session-tools'
+    useTabStore.setState({ tabs: [{ sessionId: SESSION_ID, title: 'Chat', type: 'session' as const, status: 'idle' }], activeTabId: SESSION_ID })
+    useSessionStore.setState({
+      sessions: [{
+        id: SESSION_ID,
+        title: 'Chat',
+        createdAt: '2026-04-10T00:00:00.000Z',
+        modifiedAt: '2026-04-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '__chat__',
+        workDir: null,
+        workDirExists: true,
+        mode: 'chat',
+      }],
+      activeSessionId: SESSION_ID,
+      isLoading: false,
+      error: null,
+    })
+    useChatStore.setState({
+      sessions: {
+        [SESSION_ID]: {
+          messages: [{
+            id: 'msg-1',
+            type: 'user_text',
+            content: 'hello',
+            timestamp: Date.now(),
+          }],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    render(<ActiveSession />)
+
+    expect(screen.getByText('Default permissions')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open composer tools' }))
+    expect(screen.getByText('Add files or photos')).toBeInTheDocument()
+    expect(screen.getByText('Slash commands')).toBeInTheDocument()
+
+    useTabStore.setState({ tabs: [], activeTabId: null })
+    useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
+    useChatStore.setState({ sessions: {} })
+  })
+
   it('ActiveSession shows a single primary action button while a turn is active', () => {
     useTabStore.setState({ activeTabId: 'active-tab', tabs: [{ sessionId: 'active-tab', title: 'Test', type: 'session' as const, status: 'idle' }] })
     useChatStore.setState({
@@ -248,7 +321,7 @@ describe('AppShell layout renders chrome', () => {
     expect(container.querySelector('aside')).toBeInTheDocument()
     expect(container.innerHTML).toContain('New session')
     expect(container.innerHTML).toContain('Scheduled')
-    expect(container.innerHTML).toContain('All projects')
+    expect(container.innerHTML).toContain('Search sessions')
   })
 })
 

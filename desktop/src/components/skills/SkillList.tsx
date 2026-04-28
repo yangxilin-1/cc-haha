@@ -1,14 +1,15 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, type ReactNode } from 'react'
 import { useSkillStore } from '../../stores/skillStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTranslation } from '../../i18n'
 import type { SkillMeta, SkillSource } from '../../types/skill'
+import { FolderLineIcon } from '../shared/LineIcons'
 
 const SOURCE_ORDER: SkillSource[] = ['user', 'project', 'plugin', 'mcp', 'bundled']
 
-const SOURCE_ICONS: Record<SkillSource, string> = {
+const SOURCE_ICONS: Record<SkillSource, ReactNode> = {
   user: 'person',
-  project: 'folder',
+  project: <FolderLineIcon size={16} />,
   plugin: 'extension',
   mcp: 'hub',
   bundled: 'inventory_2',
@@ -151,9 +152,7 @@ export function SkillList() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${SOURCE_ACCENT_CLASSES[source]}`}>
-                      <span className="material-symbols-outlined text-[16px]">
-                        {SOURCE_ICONS[source]}
-                      </span>
+                      <InlineIcon icon={SOURCE_ICONS[source]} size={16} />
                     </span>
                     <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">
                       {sourceLabel}
@@ -237,13 +236,13 @@ function SummaryCard({
 }: {
   label: string
   value: string
-  icon: string
+  icon: ReactNode
   className?: string
 }) {
   return (
     <div className={`rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3 min-w-0 ${className}`}>
       <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] min-w-0">
-        <span className="material-symbols-outlined text-[14px] flex-shrink-0">{icon}</span>
+        <InlineIcon icon={icon} size={14} className="flex-shrink-0" />
         <span className="truncate">{label}</span>
       </div>
       <div className="mt-2 text-lg font-semibold text-[var(--color-text-primary)] truncate">
@@ -251,4 +250,27 @@ function SummaryCard({
       </div>
     </div>
   )
+}
+
+function InlineIcon({
+  icon,
+  size = 14,
+  className = '',
+}: {
+  icon: ReactNode
+  size?: number
+  className?: string
+}) {
+  if (typeof icon === 'string') {
+    return (
+      <span
+        className={`material-symbols-outlined flex-shrink-0 ${className}`}
+        style={{ fontSize: size }}
+      >
+        {icon}
+      </span>
+    )
+  }
+
+  return <>{icon}</>
 }

@@ -1,8 +1,5 @@
-import { normalizeNameForMCP } from '../../services/mcp/normalization.js'
-import { env } from '../env.js'
-
 export const COMPUTER_USE_MCP_SERVER_NAME = 'computer-use'
-export const CLI_HOST_PLATFORM_BUNDLE_ID = 'com.anthropic.claude-code.cli-no-window'
+export const DESKTOP_HOST_PLATFORM_BUNDLE_ID = 'com.ycode.desktop.no-window'
 
 export function isComputerUseSupportedPlatform(
   platform: NodeJS.Platform = process.platform,
@@ -11,18 +8,16 @@ export function isComputerUseSupportedPlatform(
 }
 
 /**
- * Sentinel bundle ID for the frontmost gate. Claude Code is a terminal — it has
- * no window. This never matches a real `NSWorkspace.frontmostApplication`, so
- * the package's "host is frontmost" branch (mouse click-through exemption,
- * keyboard safety-net) is dead code for us. `prepareForAction`'s "exempt our
- * own window" is likewise a no-op — there is no window to exempt.
+ * Sentinel bundle ID for desktop server-side control. It intentionally does
+ * not match the real WebView window, so Computer Use will not type into the
+ * app's own chat box if focus was not moved away first.
  */
-export const CLI_HOST_BUNDLE_ID = CLI_HOST_PLATFORM_BUNDLE_ID
+export const DESKTOP_HOST_BUNDLE_ID = DESKTOP_HOST_PLATFORM_BUNDLE_ID
 
 /**
  * Fallback `env.terminal` → bundleId map for when `__CFBundleIdentifier` is
  * unset. Covers the macOS terminals we can distinguish. On Windows the host is
- * always the CLI sentinel above, so this table remains macOS-specific.
+ * always the desktop sentinel above, so this table remains macOS-specific.
  */
 const TERMINAL_BUNDLE_ID_FALLBACK: Readonly<Record<string, string>> = {
   'iTerm.app': 'com.googlecode.iterm2',
@@ -49,14 +44,15 @@ const TERMINAL_BUNDLE_ID_FALLBACK: Readonly<Record<string, string>> = {
 export function getTerminalBundleId(): string | null {
   const cfBundleId = process.env.__CFBundleIdentifier
   if (cfBundleId) return cfBundleId
-  return TERMINAL_BUNDLE_ID_FALLBACK[env.terminal ?? ''] ?? null
+  const terminalName = process.env.TERM_PROGRAM || process.env.TERMINAL_EMULATOR
+  return TERMINAL_BUNDLE_ID_FALLBACK[terminalName ?? ''] ?? null
 }
 
 /**
- * CLI computer-use capabilities by platform. `hostBundleId` is not here —
- * it's added by `executor.ts` per `ComputerExecutor.capabilities`.
+ * Desktop computer-use capabilities by platform. `hostBundleId` is not here;
+ * it is added by `executor.ts` per `ComputerExecutor.capabilities`.
  */
-export function getCliComputerUseCapabilities(
+export function getDesktopComputerUseCapabilities(
   platform: NodeJS.Platform = process.platform,
 ): {
   screenshotFiltering: 'native' | 'none'
@@ -83,4 +79,12 @@ export function getCliComputerUseCapabilities(
 
 export function isComputerUseMCPServer(name: string): boolean {
   return normalizeNameForMCP(name) === COMPUTER_USE_MCP_SERVER_NAME
+}
+
+function normalizeNameForMCP(name: string): string {
+  let normalized = name.replace(/[^a-zA-Z0-9_-]/g, '_')
+  if (name.startsWith('claude.ai ')) {
+    normalized = normalized.replace(/_+/g, '_').replace(/^_|_$/g, '')
+  }
+  return normalized
 }

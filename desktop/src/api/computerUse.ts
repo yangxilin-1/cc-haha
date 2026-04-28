@@ -37,6 +37,9 @@ export type InstalledApp = {
   bundleId: string
   displayName: string
   path: string
+  iconDataUrl?: string
+  category?: string
+  isCommon?: boolean
 }
 
 export type AuthorizedApp = {
@@ -47,6 +50,7 @@ export type AuthorizedApp = {
 
 export type ComputerUseConfig = {
   authorizedApps: AuthorizedApp[]
+  computerWideAccess: boolean
   grantFlags: {
     clipboardRead: boolean
     clipboardWrite: boolean

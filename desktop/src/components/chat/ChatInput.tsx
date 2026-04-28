@@ -4,6 +4,7 @@ import { useChatStore } from '../../stores/chatStore'
 import { useTabStore } from '../../stores/tabStore'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTeamStore } from '../../stores/teamStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { sessionsApi } from '../../api/sessions'
 import { PermissionModeSelector } from '../controls/PermissionModeSelector'
 import { ModelSelector } from '../controls/ModelSelector'
@@ -11,11 +12,14 @@ import type { AttachmentRef } from '../../types/chat'
 import { AttachmentGallery } from './AttachmentGallery'
 import { ProjectContextChip } from '../shared/ProjectContextChip'
 import { DirectoryPicker } from '../shared/DirectoryPicker'
-import { FileSearchMenu, type FileSearchMenuHandle } from './FileSearchMenu'
+import { FileSearchMenu, type FileSearchMenuAction, type FileSearchMenuHandle } from './FileSearchMenu'
 import {
-  FALLBACK_SLASH_COMMANDS,
+  filterSlashCommands,
+  findAtTrigger,
   findSlashTrigger,
+  getFallbackSlashCommands,
   mergeSlashCommands,
+  replaceAtToken,
   replaceSlashToken,
 } from './composerUtils'
 
@@ -32,9 +36,10 @@ type Attachment = {
 
 type ChatInputProps = {
   variant?: 'default' | 'hero'
+  mode?: 'chat' | 'code'
 }
 
-export function ChatInput({ variant = 'default' }: ChatInputProps) {
+export function ChatInput({ variant = 'default', mode }: ChatInputProps) {
   const t = useTranslation()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -54,6 +59,7 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   const slashItemRefs = useRef<(HTMLButtonElement | null)[]>([])
   const { sendMessage, stopGeneration } = useChatStore()
   const activeTabId = useTabStore((s) => s.activeTabId)
+  const locale = useSettingsStore((s) => s.locale)
   const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
   const chatState = sessionState?.chatState ?? 'idle'
   const slashCommands = sessionState?.slashCommands ?? []
@@ -63,9 +69,15 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   const hasMessages = useChatStore((s) => activeTabId ? (s.sessions[activeTabId]?.messages?.length ?? 0) > 0 : false)
 
   const isMemberSession = !!memberInfo
+  const isChatSession = mode === 'chat' || activeSession?.mode === 'chat'
+  const canUseSessionTools = !isMemberSession
+  const canUseProjectTools = canUseSessionTools && !isChatSession
+  const canUseAtMentions = canUseSessionTools
+  const canUseAttachments = canUseSessionTools
+  const canUseSlashCommands = canUseSessionTools
   const isActive = chatState !== 'idle'
-  const isWorkspaceMissing = activeSession?.workDirExists === false
-  const canSubmit = !isWorkspaceMissing && (input.trim().length > 0 || (!isMemberSession && attachments.length > 0))
+  const isWorkspaceMissing = activeSession?.mode !== 'chat' && activeSession?.workDirExists === false
+  const canSubmit = !isWorkspaceMissing && (input.trim().length > 0 || (canUseAttachments && attachments.length > 0))
   const isHeroComposer = variant === 'hero' && !isMemberSession
 
   useEffect(() => {
@@ -77,20 +89,24 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
       setGitInfo(null)
       return
     }
-    if (isMemberSession) {
+    if (!canUseProjectTools) {
       setGitInfo(null)
       return
     }
     sessionsApi.getGitInfo(activeTabId).then(setGitInfo).catch(() => setGitInfo(null))
-  }, [activeTabId, isMemberSession])
+  }, [activeTabId, canUseProjectTools])
 
   useEffect(() => {
-    if (!isMemberSession) return
-    setAttachments([])
-    setPlusMenuOpen(false)
-    setSlashMenuOpen(false)
+    if (isMemberSession) {
+      setAttachments([])
+      setPlusMenuOpen(false)
+      setSlashMenuOpen(false)
+    }
+    if (canUseAtMentions) return
     setFileSearchOpen(false)
-  }, [isMemberSession, activeTabId])
+    setAtFilter('')
+    setAtCursorPos(-1)
+  }, [isMemberSession, canUseAtMentions, activeTabId])
 
   useEffect(() => {
     const el = textareaRef.current
@@ -144,14 +160,22 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   }, [fileSearchOpen])
 
   const filteredCommands = useMemo(() => {
-    const source = mergeSlashCommands(slashCommands, FALLBACK_SLASH_COMMANDS)
-    if (!slashFilter) return source
-    const lower = slashFilter.toLowerCase()
-    return source.filter((command) => (
-      command.name.toLowerCase().includes(lower) ||
-      command.description.toLowerCase().includes(lower)
-    ))
-  }, [slashCommands, slashFilter])
+    const fallback = getFallbackSlashCommands(locale, isChatSession ? 'chat' : 'code')
+    const source = mergeSlashCommands(slashCommands, fallback)
+    return filterSlashCommands(source, slashFilter)
+  }, [isChatSession, locale, slashCommands, slashFilter])
+
+  const atActions: FileSearchMenuAction[] = useMemo(() => [
+    {
+      id: 'computer-use',
+      label: 'Computer Use',
+      description: locale === 'zh'
+        ? '控制本机应用、屏幕、键盘和鼠标'
+        : 'Control local apps, screen, keyboard, and mouse',
+      insertText: 'Computer Use',
+      aliases: ['computer', 'use', 'desktop', '电脑', '桌面', '控制', '应用'],
+    },
+  ], [locale])
 
   useEffect(() => {
     setSlashSelectedIndex(0)
@@ -175,35 +199,17 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
     setSlashMenuOpen(true)
   }, [])
 
-  // Detect @ trigger (file search)
+  // Detect @ trigger (Computer Use and, in Code mode, file mentions)
   const detectAtTrigger = useCallback((value: string, cursorPos: number) => {
-    const textBeforeCursor = value.slice(0, cursorPos)
-    let pos = -1
-
-    for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
-      const ch = textBeforeCursor[i]!
-      if (ch === '@') {
-        if (i === 0 || /\s/.test(textBeforeCursor[i - 1]!)) {
-          pos = i
-          break
-        }
-        break
-      }
-      if (/\s/.test(ch)) {
-        break
-      }
-    }
-
-    if (pos < 0) {
+    const token = findAtTrigger(value, cursorPos)
+    if (!token) {
       setFileSearchOpen(false)
       setAtFilter('')
       setAtCursorPos(-1)
       return
     }
 
-    // Extract filter text after @
-    const filter = textBeforeCursor.slice(pos + 1)
-    setAtFilter(filter)
+    setAtFilter(token.filter)
     setAtCursorPos(cursorPos)
     setSlashMenuOpen(false)
     setFileSearchOpen(true)
@@ -211,14 +217,26 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
 
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value
-    if (isMemberSession) {
+    if (!canUseSessionTools) {
       setInput(value)
+      setSlashMenuOpen(false)
+      setFileSearchOpen(false)
       return
     }
     const cursorPos = event.target.selectionStart ?? value.length
     setInput(value)
-    detectSlashTrigger(value, cursorPos)
-    detectAtTrigger(value, cursorPos)
+    if (canUseSlashCommands) {
+      detectSlashTrigger(value, cursorPos)
+    } else {
+      setSlashMenuOpen(false)
+    }
+    if (canUseAtMentions) {
+      detectAtTrigger(value, cursorPos)
+    } else {
+      setFileSearchOpen(false)
+      setAtFilter('')
+      setAtCursorPos(-1)
+    }
   }
 
   const selectSlashCommand = useCallback((command: string) => {
@@ -235,17 +253,19 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   }, [input])
 
   const handleSubmit = () => {
-    const text = input.trim()
-    if ((!text && (!attachments.length || isMemberSession)) || isWorkspaceMissing) return
+    const hasText = input.trim().length > 0
+    if ((!hasText && (!attachments.length || !canUseAttachments)) || isWorkspaceMissing) return
 
-    const attachmentPayload: AttachmentRef[] = attachments.map((attachment) => ({
-      type: attachment.type,
-      name: attachment.name,
-      data: attachment.data,
-      mimeType: attachment.mimeType,
-    }))
+    const attachmentPayload: AttachmentRef[] = canUseAttachments
+      ? attachments.map((attachment) => ({
+          type: attachment.type,
+          name: attachment.name,
+          data: attachment.data,
+          mimeType: attachment.mimeType,
+        }))
+      : []
 
-    sendMessage(activeTabId!, text, attachmentPayload)
+    sendMessage(activeTabId!, input, attachmentPayload)
     setInput('')
     setAttachments([])
     setPlusMenuOpen(false)
@@ -306,7 +326,7 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   }
 
   const handlePaste = (event: React.ClipboardEvent) => {
-    if (isMemberSession) return
+    if (!canUseAttachments) return
     const items = event.clipboardData?.items
     if (!items) return
 
@@ -342,7 +362,7 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   }
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (isMemberSession) return
+    if (!canUseAttachments) return
     const files = event.target.files
     if (!files) return
 
@@ -371,7 +391,7 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
 
   const handleDrop = (event: React.DragEvent) => {
     event.preventDefault()
-    if (isMemberSession) return
+    if (!canUseAttachments) return
     const files = event.dataTransfer.files
     if (files.length > 0) {
       const fakeEvent = { target: { files } } as React.ChangeEvent<HTMLInputElement>
@@ -384,7 +404,7 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
   }
 
   const insertSlashCommand = () => {
-    if (isMemberSession) return
+    if (!canUseSlashCommands) return
     const el = textareaRef.current
     const cursorPos = el?.selectionStart ?? input.length
     const replacement = replaceSlashToken(input, cursorPos, '', { trailingSpace: false })
@@ -405,45 +425,48 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
         ? t('chat.placeholderMissing')
         : isMemberSession
           ? t('teams.memberPlaceholder')
-          : t('chat.placeholder')
+          : isChatSession
+            ? t('chat.placeholderChat')
+            : t('chat.placeholder')
 
   const addFilesLabel = isHeroComposer ? t('empty.addFiles') : t('chat.addFiles')
   const slashCommandsLabel = isHeroComposer ? t('empty.slashCommands') : t('chat.slashCommands')
 
   return (
-    <div className={isHeroComposer ? 'bg-[var(--color-surface)] px-8 pb-4' : 'bg-[var(--color-surface)] px-4 py-4'}>
+    <div className={isHeroComposer ? 'shrink-0 bg-[var(--color-surface)] px-8 pb-4' : 'shrink-0 bg-[var(--color-surface)] px-4 py-4'}>
       <div className={isHeroComposer ? 'mx-auto flex w-full max-w-3xl flex-col gap-2' : 'mx-auto max-w-[860px]'}>
         <div
           className={isHeroComposer
-            ? 'glass-panel relative flex flex-col gap-3 rounded-xl p-4 transition-colors'
-            : 'glass-panel relative rounded-xl p-4 transition-colors'}
+            ? 'glass-panel relative flex flex-col gap-3 rounded-[24px] px-5 py-4 transition-colors'
+            : 'glass-panel relative rounded-[24px] px-5 py-4 transition-colors'}
           onDragOver={(event) => event.preventDefault()}
           onDrop={handleDrop}
         >
-          {!isMemberSession && fileSearchOpen && (
+          {canUseAtMentions && fileSearchOpen && (
             <FileSearchMenu
               ref={fileSearchRef}
               cwd={gitInfo?.workDir || activeSession?.workDir || ''}
+              enableFileSearch={canUseProjectTools}
+              actions={atActions}
               filter={atFilter}
               onSelect={(_path, name) => {
                 if (atCursorPos >= 0) {
-                  // Insert name at cursor position, replacing filter text
-                  const newValue = `${input.slice(0, atCursorPos)}${name}${input.slice(atCursorPos)}`
-                  const newCursorPos = atCursorPos + name.length
-                  setInput(newValue)
+                  const replacement = replaceAtToken(input, atCursorPos, name)
+                  if (!replacement) return
+                  setInput(replacement.value)
                   setFileSearchOpen(false)
                   setAtFilter('')
                   setAtCursorPos(-1)
                   void textareaRef.current?.focus()
                   requestAnimationFrame(() => {
-                    textareaRef.current?.setSelectionRange(newCursorPos, newCursorPos)
+                    textareaRef.current?.setSelectionRange(replacement.cursorPos, replacement.cursorPos)
                   })
                 }
               }}
             />
           )}
 
-          {!isMemberSession && slashMenuOpen && filteredCommands.length > 0 && (
+          {canUseSlashCommands && slashMenuOpen && filteredCommands.length > 0 && (
             <div
               ref={slashMenuRef}
               className="absolute bottom-full left-0 right-0 z-50 mb-2 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] shadow-[var(--shadow-dropdown)]"
@@ -524,10 +547,10 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
           )}
 
           <div className={isHeroComposer
-            ? 'flex items-center justify-between border-t border-[var(--color-border-separator)] pt-3'
-            : 'absolute bottom-0 left-0 right-0 flex items-center justify-between border-t border-[var(--color-border-separator)] px-3 py-3'}>
+            ? 'flex items-center justify-between pt-2'
+            : 'absolute bottom-0 left-0 right-0 flex items-center justify-between px-4 py-3'}>
             <div className="flex items-center gap-2">
-              {!isMemberSession && (
+              {canUseSessionTools && (
                 <>
                   <div ref={plusMenuRef} className="relative">
                     <button
@@ -581,15 +604,17 @@ export function ChatInput({ variant = 'default' }: ChatInputProps) {
                 <span className="material-symbols-outlined text-[14px]">
                   {!isMemberSession && isActive ? 'stop' : 'arrow_forward'}
                 </span>
-                {!isMemberSession && isActive ? t('common.stop') : isMemberSession ? t('common.send') : t('common.run')}
+                {!isMemberSession && isActive ? t('common.stop') : (isMemberSession || isChatSession) ? t('common.send') : t('common.run')}
               </button>
             </div>
           </div>
         </div>
 
-        <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+        {canUseAttachments && (
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+        )}
 
-        {!isMemberSession && (
+        {canUseProjectTools && (
           <div className="mt-3 px-1">
             {hasMessages ? (
               <ProjectContextChip

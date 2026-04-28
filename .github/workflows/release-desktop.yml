@@ -167,7 +167,7 @@ jobs:
           projectPath: desktop
           tauriScript: bunx tauri
           tagName: v__VERSION__
-          releaseName: 'Claude Code Haha v__VERSION__'
+          releaseName: 'Ycode v__VERSION__'
           releaseBody: ${{ steps.release_notes.outputs.body }}
           releaseDraft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           prerelease: false

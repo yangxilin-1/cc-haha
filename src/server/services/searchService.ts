@@ -1,14 +1,16 @@
 /**
  * SearchService — 工作区文件搜索 & 会话历史搜索
  *
- * 优先使用 ripgrep (rg)，不可用时降级到 grep。
+ * 优先使用 ripgrep (rg)，不可用时使用内置文件扫描，避免桌面端依赖
+ * Unix-only commands such as grep.
  */
 
 import { spawn } from 'child_process'
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import * as os from 'os'
+import picomatch from 'picomatch'
 import { ApiError } from '../middleware/errorHandler.js'
+import { getAppDataDir } from '../utils/paths.js'
 
 export type SearchResult = {
   file: string
@@ -46,17 +48,17 @@ export class SearchService {
     const cwd = options?.cwd || process.cwd()
     const maxResults = options?.maxResults || 200
 
-    // 尝试 rg，降级到 grep
+    // 尝试 rg，失败时降级到内置扫描。Windows 桌面环境不能假设 grep/which 存在。
     const hasRg = await this.commandExists('rg')
     if (hasRg) {
       try {
         return await this.searchWithRipgrep(query, cwd, maxResults, options)
       } catch {
-        // rg 执行失败，降级到 grep
+        // rg 执行失败，降级到内置扫描
       }
     }
 
-    return this.searchWithGrep(query, cwd, maxResults, options)
+    return this.searchWithFileScan(query, cwd, maxResults, options)
   }
 
   // ---------------------------------------------------------------------------
@@ -69,8 +71,7 @@ export class SearchService {
       throw ApiError.badRequest('Search query is required')
     }
 
-    const configDir =
-      process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    const configDir = process.env.YCODE_DATA_DIR || getAppDataDir()
     const projectsDir = path.join(configDir, 'projects')
 
     const results: SessionSearchResult[] = []
@@ -235,10 +236,10 @@ export class SearchService {
   }
 
   // ---------------------------------------------------------------------------
-  // grep 降级
+  // 内置扫描降级
   // ---------------------------------------------------------------------------
 
-  private async searchWithGrep(
+  private async searchWithFileScan(
     query: string,
     cwd: string,
     maxResults: number,
@@ -247,37 +248,35 @@ export class SearchService {
       caseSensitive?: boolean
     },
   ): Promise<SearchResult[]> {
-    const args = ['-rn', '--max-count', String(maxResults)]
-
-    if (options?.caseSensitive === false) {
-      args.push('-i')
-    }
-
-    if (options?.glob) {
-      args.push('--include', options.glob)
-    }
-
-    args.push('--', query, cwd)
-
-    const output = await this.runCommand('grep', args)
-    return this.parseGrepOutput(output, maxResults)
-  }
-
-  /** 解析 grep 输出 (file:line:text) */
-  private parseGrepOutput(output: string, maxResults: number): SearchResult[] {
     const results: SearchResult[] = []
-    const lines = output.split('\n').filter(Boolean)
+    const matcher = options?.glob ? picomatch(options.glob) : null
+    const needle = options?.caseSensitive === false ? query.toLowerCase() : query
 
-    for (const line of lines) {
+    const files = await this.walkWorkspaceFiles(cwd)
+    for (const file of files) {
       if (results.length >= maxResults) break
 
-      // grep -n 输出格式: file:line:text
-      const match = line.match(/^(.+?):(\d+):(.*)$/)
-      if (match) {
+      const relative = path.relative(cwd, file)
+      if (matcher && !matcher(relative.replace(/\\/g, '/'))) continue
+
+      let content: string
+      try {
+        content = await fs.readFile(file, 'utf-8')
+      } catch {
+        continue
+      }
+
+      const lines = content.split(/\r?\n/)
+      for (let index = 0; index < lines.length; index++) {
+        if (results.length >= maxResults) break
+        const line = lines[index] ?? ''
+        const haystack = options?.caseSensitive === false ? line.toLowerCase() : line
+        if (!haystack.includes(needle)) continue
+
         results.push({
-          file: match[1],
-          line: parseInt(match[2], 10),
-          text: match[3],
+          file,
+          line: index + 1,
+          text: line,
         })
       }
     }
@@ -318,10 +317,35 @@ export class SearchService {
   /** 检测命令是否存在 */
   private commandExists(cmd: string): Promise<boolean> {
     return new Promise((resolve) => {
-      const proc = spawn('which', [cmd], { stdio: 'ignore' })
+      const lookup = process.platform === 'win32' ? 'where.exe' : 'which'
+      const proc = spawn(lookup, [cmd], { stdio: 'ignore' })
       proc.on('close', (code) => resolve(code === 0))
       proc.on('error', () => resolve(false))
     })
+  }
+
+  /** 递归查找可扫描文件 */
+  private async walkWorkspaceFiles(dir: string): Promise<string[]> {
+    const results: string[] = []
+    const ignoredDirs = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'target'])
+
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (ignoredDirs.has(entry.name)) continue
+          const sub = await this.walkWorkspaceFiles(fullPath)
+          results.push(...sub)
+        } else if (entry.isFile()) {
+          results.push(fullPath)
+        }
+      }
+    } catch {
+      // 跳过不可访问的目录
+    }
+
+    return results
   }
 
   /** 递归查找 .jsonl 文件 */

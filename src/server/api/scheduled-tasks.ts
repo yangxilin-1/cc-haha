@@ -67,18 +67,12 @@ export async function handleScheduledTasksApi(
     }
 
     // ── POST /api/scheduled-tasks/:id/run ──────────────────────────────────
-    // Fire-and-forget: start execution in background, return immediately.
-    // The frontend polls GET /:id/runs to track progress.
     if (method === 'POST' && taskId && subResource === 'run') {
       const tasks = await cronService.listTasks()
       const task = tasks.find((t) => t.id === taskId)
       if (!task) throw ApiError.notFound(`Task ${taskId} not found`)
-      cronScheduler.executeTask(task, { createSession: true }).catch((err) => {
-        console.error(`[ScheduledTasks] Manual run failed for task ${taskId}:`, err)
-      })
-      // Small delay to let appendRun() write the "running" entry to disk
-      await new Promise((r) => setTimeout(r, 200))
-      return Response.json({ ok: true })
+      const run = await cronScheduler.executeTask(task, { createSession: true })
+      return Response.json({ run })
     }
 
     // ── PUT /api/scheduled-tasks/:id ──────────────────────────────────────

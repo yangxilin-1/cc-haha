@@ -9,12 +9,12 @@ REPO_ROOT="$(cd "${DESKTOP_DIR}/.." && pwd)"
 TARGET_TRIPLE="aarch64-apple-darwin"
 TAURI_TARGET_DIR="${DESKTOP_DIR}/src-tauri/target"
 CANONICAL_OUTPUT_DIR="${DESKTOP_DIR}/build-artifacts/macos-arm64"
-APP_BUNDLE_NAME="Claude Code Haha.app"
-APP_BUNDLE_ID="com.claude-code-haha.desktop"
+APP_BUNDLE_NAME="Ycode.app"
+APP_BUNDLE_ID="com.ycode.desktop"
 
 usage() {
   cat <<'EOF'
-Build Claude Code Haha desktop for macOS Apple Silicon and output a DMG.
+Build Ycode desktop for macOS Apple Silicon and output a DMG.
 
 Usage:
   ./desktop/scripts/build-macos-arm64.sh [extra tauri build args...]
@@ -74,7 +74,7 @@ fi
 #      避免 sidecar 被重复编译浪费 ~10s
 # 任一步失败,整个脚本立即退出(set -e)。
 echo "[build-macos-arm64] Cleaning stale sidecar binaries and bundle output..."
-rm -rf "${DESKTOP_DIR}/src-tauri/binaries/claude-sidecar-"*
+rm -rf "${DESKTOP_DIR}/src-tauri/binaries/ycode-sidecar-"*
 rm -rf "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}/release/bundle"
 rm -rf "${DESKTOP_DIR}/src-tauri/target/release/bundle"
 rm -rf "${DESKTOP_DIR}/dist"
@@ -154,15 +154,15 @@ build_canonical_dmg() {
   local staging_dir
   local rw_dmg
 
-  staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/cc-haha-dmg.XXXXXX")"
-  rw_dmg="$(mktemp "${TMPDIR:-/tmp}/cc-haha-rw.XXXXXX").dmg"
+  staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/ycode-dmg.XXXXXX")"
+  rw_dmg="$(mktemp "${TMPDIR:-/tmp}/ycode-rw.XXXXXX").dmg"
 
   cp -R "${app_bundle}" "${staging_dir}/"
   ln -s /Applications "${staging_dir}/Applications"
 
   # Create a read-write DMG first so we can customize the Finder layout
   hdiutil create \
-    -volname "Claude Code Haha" \
+    -volname "Ycode" \
     -srcfolder "${staging_dir}" \
     -ov \
     -format UDRW \
@@ -183,7 +183,7 @@ build_canonical_dmg() {
   # 所以这里允许 osascript 非零退出,只 warn,不让 set -e 炸掉整个脚本。
   if ! osascript <<APPLESCRIPT
 tell application "Finder"
-  tell disk "Claude Code Haha"
+  tell disk "Ycode"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -233,7 +233,7 @@ if [[ -n "${LATEST_APP}" ]]; then
   rm -f "${CANONICAL_OUTPUT_DIR}/"*.dmg
   build_canonical_dmg \
     "${CANONICAL_OUTPUT_DIR}/${APP_BUNDLE_NAME}" \
-    "${CANONICAL_OUTPUT_DIR}/$(basename "${LATEST_DMG:-Claude Code Haha_0.1.0_aarch64.dmg}")"
+    "${CANONICAL_OUTPUT_DIR}/$(basename "${LATEST_DMG:-Ycode_0.1.0_aarch64.dmg}")"
 fi
 
 cat > "${CANONICAL_OUTPUT_DIR}/BUILD_INFO.txt" <<EOF

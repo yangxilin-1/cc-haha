@@ -1,19 +1,18 @@
 /**
- * Claude Code Desktop App — HTTP + WebSocket Server
+ * Ycode Desktop App — HTTP + WebSocket Server
  *
  * 为桌面端 UI 提供 REST API 和 WebSocket 实时通信。
- * 读写与 CLI 完全相同的文件系统，确保 CLI/UI 数据互通。
+ * 对话、工具、权限和会话存储由桌面端原生 runtime 负责。
  */
 
 import { handleApiRequest } from './router.js'
 import { handleWebSocket, type WebSocketData } from './ws/handler.js'
 import { corsHeaders } from './middleware/cors.js'
 import { requireAuth } from './middleware/auth.js'
-import { teamWatcher } from './services/teamWatcher.js'
-import { cronScheduler } from './services/cronScheduler.js'
 import { handleProxyRequest } from './proxy/handler.js'
 import { ProviderService } from './services/providerService.js'
-import { handleHahaOAuthCallback } from './api/haha-oauth.js'
+import { LocalLlamaService } from './services/localLlamaService.js'
+import { handleYcodeOAuthCallback } from './api/ycode-oauth.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -30,12 +29,7 @@ function resolveServerOptions() {
   const portArg = readArgValue('--port')
   const port = Number.parseInt(portArg || process.env.SERVER_PORT || '3456', 10)
   const host = readArgValue('--host') || process.env.SERVER_HOST || '127.0.0.1'
-  const cliPath = readArgValue('--cli-path')
   const authRequired = hasArgFlag('--auth-required')
-
-  if (cliPath) {
-    process.env.CLAUDE_CLI_PATH = cliPath
-  }
 
   return { port, host, authRequired }
 }
@@ -99,28 +93,6 @@ export function startServer(port = PORT, host = HOST) {
           data: {
             sessionId,
             connectedAt: Date.now(),
-            channel: 'client',
-            sdkToken: null,
-            serverPort: port,
-            serverHost: localConnectHost,
-          },
-        })
-        if (upgraded) return undefined
-        return new Response('WebSocket upgrade failed', { status: 400 })
-      }
-
-      // Internal SDK WebSocket used by the spawned Claude CLI.
-      if (url.pathname.startsWith('/sdk/')) {
-        const sessionId = url.pathname.split('/').pop() || ''
-        if (!sessionId || !/^[0-9a-zA-Z_-]{1,64}$/.test(sessionId)) {
-          return new Response('Invalid session ID', { status: 400 })
-        }
-        const upgraded = server.upgrade(req, {
-          data: {
-            sessionId,
-            connectedAt: Date.now(),
-            channel: 'sdk',
-            sdkToken: url.searchParams.get('token'),
             serverPort: port,
             serverHost: localConnectHost,
           },
@@ -130,7 +102,7 @@ export function startServer(port = PORT, host = HOST) {
       }
 
       if (url.pathname === '/callback') {
-        return handleHahaOAuthCallback(url)
+        return handleYcodeOAuthCallback(url)
       }
 
       // REST API
@@ -212,43 +184,21 @@ export function startServer(port = PORT, host = HOST) {
     websocket: handleWebSocket,
   })
 
-  // Start watching ~/.claude/teams/ for real-time WebSocket push
-  teamWatcher.start()
-
-  // Start the cron scheduler to execute scheduled tasks
-  cronScheduler.start()
-
-  console.log(`[Server] Claude Code API server running at http://${host}:${port}`)
+  console.log(`[Server] Ycode Desktop API server running at http://${host}:${port}`)
+  void LocalLlamaService.startConfigured().catch((err) => {
+    console.warn('[Server] Local llama.cpp auto-start failed:', err)
+  })
   return server
-}
-
-// ─── Graceful shutdown: kill all CLI subprocesses on exit ────────────────────
-import { conversationService } from './services/conversationService.js'
-
-function cleanupAllSessions() {
-  const active = conversationService.getActiveSessions()
-  if (active.length > 0) {
-    console.log(`[Server] Shutting down — killing ${active.length} CLI subprocess(es)`)
-    for (const sessionId of active) {
-      conversationService.stopSession(sessionId)
-    }
-  }
 }
 
 process.on('SIGTERM', () => {
   console.log('[Server] Received SIGTERM')
-  cleanupAllSessions()
   process.exit(0)
 })
 
 process.on('SIGINT', () => {
   console.log('[Server] Received SIGINT')
-  cleanupAllSessions()
   process.exit(0)
-})
-
-process.on('exit', () => {
-  cleanupAllSessions()
 })
 
 // Direct execution

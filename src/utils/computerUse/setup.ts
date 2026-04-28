@@ -7,7 +7,7 @@ import type { ScopedMcpServerConfig } from '../../services/mcp/types.js'
 import { isInBundledMode } from '../bundledMode.js'
 import {
   COMPUTER_USE_MCP_SERVER_NAME,
-  getCliComputerUseCapabilities,
+  getDesktopComputerUseCapabilities,
 } from './common.js'
 import { getChicagoCoordinateMode } from './gates.js'
 
@@ -28,7 +28,7 @@ export function setupComputerUseMCP(): {
   allowedTools: string[]
 } {
   const allowedTools = buildComputerUseTools(
-    getCliComputerUseCapabilities(),
+    getDesktopComputerUseCapabilities(),
     getChicagoCoordinateMode(),
   ).map(t => buildMcpToolName(COMPUTER_USE_MCP_SERVER_NAME, t.name))
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { FileSearchMenu } from './FileSearchMenu'
 import { ApiError } from '../../api/client'
@@ -51,6 +51,33 @@ describe('FileSearchMenu', () => {
 
     await waitFor(() => {
       expect(screen.getByText('preview.png')).toBeInTheDocument()
+    })
+  })
+
+  it('renders action mentions without browsing the filesystem', () => {
+    const onSelect = vi.fn()
+
+    render(
+      <FileSearchMenu
+        cwd=""
+        enableFileSearch={false}
+        actions={[{
+          id: 'computer-use',
+          label: 'Computer Use',
+          description: 'Control local apps',
+          insertText: 'Computer Use',
+        }]}
+        onSelect={onSelect}
+      />,
+    )
+
+    expect(screen.getByText('Computer Use')).toBeInTheDocument()
+    expect(filesystemApi.browse).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByText('Computer Use'))
+    expect(onSelect).toHaveBeenCalledWith('', 'Computer Use', {
+      type: 'action',
+      id: 'computer-use',
     })
   })
 })

@@ -288,6 +288,26 @@ const POLICY_DENIED_NAME_SUBSTRINGS: readonly string[] = [
   //   HBO Max / Max, YouTube (non-Music), Nook, Sony Catalyst, Wired
 ];
 
+function normalizeBundleIdKey(value: string | undefined): string {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function bundleIdSetHas(
+  bundleIds: ReadonlySet<string>,
+  bundleId: string | undefined,
+): boolean {
+  const key = normalizeBundleIdKey(bundleId);
+  return Boolean(
+    key &&
+      [...bundleIds].some(
+        (candidate) => normalizeBundleIdKey(candidate) === key,
+      ),
+  );
+}
+
 /**
  * Policy-level auto-deny. Unlike `userDeniedBundleIds` (per-user Settings
  * page), this is baked into the build. `buildAccessRequest` strips these
@@ -298,7 +318,7 @@ export function isPolicyDenied(
   bundleId: string | undefined,
   displayName: string,
 ): boolean {
-  if (bundleId && POLICY_DENIED_BUNDLE_IDS.has(bundleId)) return true;
+  if (bundleIdSetHas(POLICY_DENIED_BUNDLE_IDS, bundleId)) return true;
   const lower = displayName.toLowerCase();
   for (const sub of POLICY_DENIED_NAME_SUBSTRINGS) {
     if (lower.includes(sub)) return true;
@@ -307,9 +327,9 @@ export function isPolicyDenied(
 }
 
 export function getDeniedCategory(bundleId: string): DeniedCategory | null {
-  if (BROWSER_BUNDLE_IDS.has(bundleId)) return "browser";
-  if (TERMINAL_BUNDLE_IDS.has(bundleId)) return "terminal";
-  if (TRADING_BUNDLE_IDS.has(bundleId)) return "trading";
+  if (bundleIdSetHas(BROWSER_BUNDLE_IDS, bundleId)) return "browser";
+  if (bundleIdSetHas(TERMINAL_BUNDLE_IDS, bundleId)) return "terminal";
+  if (bundleIdSetHas(TRADING_BUNDLE_IDS, bundleId)) return "trading";
   return null;
 }
 

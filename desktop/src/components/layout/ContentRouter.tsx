@@ -1,6 +1,6 @@
 import { useTabStore } from '../../stores/tabStore'
 import { EmptySession } from '../../pages/EmptySession'
-import { ActiveSession } from '../../pages/ActiveSession'
+import { UnifiedSession } from '../../pages/UnifiedSession'
 import { ScheduledTasks } from '../../pages/ScheduledTasks'
 import { Settings } from '../../pages/Settings'
 
@@ -22,6 +22,6 @@ export function ContentRouter() {
     return <ScheduledTasks />
   }
 
-  // Session tab — ActiveSession handles both regular and member sessions
-  return <ActiveSession />
+  // Session tab — route through the mode-aware shell.
+  return <UnifiedSession sessionId={activeTabId} />
 }

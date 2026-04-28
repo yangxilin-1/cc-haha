@@ -9,10 +9,19 @@ type Props = {
 
 export function AssistantMessage({ content, isStreaming }: Props) {
   return (
-    <div className="group mb-5 ml-10 flex items-end gap-1.5">
-      <div className="min-w-0">
-        <div className="rounded-[20px] rounded-tl-[8px] border border-[var(--color-border)]/60 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-primary)] shadow-sm">
-          <MarkdownRenderer content={content} />
+    <div className="group mb-6 flex w-full items-start gap-1.5">
+      <div className="min-w-0 flex-1 pr-2">
+        <div className="w-full overflow-visible px-1 py-1 text-sm leading-relaxed text-[var(--color-text-primary)]">
+          {isStreaming ? (
+            <div className="w-full max-w-none whitespace-pre-wrap break-words">
+              {content}
+            </div>
+          ) : (
+            <MarkdownRenderer
+              content={content}
+              className="w-full max-w-none break-words [&_*]:max-w-full [&>p]:max-w-none"
+            />
+          )}
           {!isStreaming && <InlineImageGallery text={content} />}
           {isStreaming && (
             <span className="ml-0.5 inline-block h-4 w-0.5 animate-shimmer bg-[var(--color-brand)] align-text-bottom" />

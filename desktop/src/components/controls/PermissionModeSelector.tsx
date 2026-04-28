@@ -1,6 +1,18 @@
 import { useState, useRef, useEffect } from 'react'
 import DOMPurify from 'dompurify'
 import { createPortal } from 'react-dom'
+import {
+  Check,
+  ChevronDown,
+  CircleCheck,
+  DraftingCompass,
+  Folder,
+  Gavel,
+  ShieldCheck,
+  TriangleAlert,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useChatStore } from '../../stores/chatStore'
 import { useSessionStore } from '../../stores/sessionStore'
@@ -8,12 +20,12 @@ import { useTabStore } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import type { PermissionMode } from '../../types/settings'
 
-const MODE_ICONS: Record<PermissionMode, string> = {
-  default: 'verified_user',
-  acceptEdits: 'bolt',
-  plan: 'architecture',
-  bypassPermissions: 'gavel',
-  dontAsk: 'gavel',
+const MODE_ICONS: Record<PermissionMode, LucideIcon> = {
+  default: ShieldCheck,
+  acceptEdits: Zap,
+  plan: DraftingCompass,
+  bypassPermissions: Gavel,
+  dontAsk: Gavel,
 }
 
 type Props = {
@@ -42,33 +54,33 @@ export function PermissionModeSelector({ workDir: workDirProp, value, onChange }
     value: PermissionMode
     label: string
     description: string
-    icon: string
+    icon: LucideIcon
     color?: string
   }> = [
     {
       value: 'default',
       label: t('permMode.askPermissions'),
       description: t('permMode.askPermDesc'),
-      icon: 'verified_user',
+      icon: ShieldCheck,
     },
     {
       value: 'acceptEdits',
       label: t('permMode.autoAccept'),
       description: t('permMode.autoAcceptDesc'),
-      icon: 'bolt',
+      icon: Zap,
     },
     {
       value: 'plan',
       label: t('permMode.planMode'),
       description: t('permMode.planModeDesc'),
-      icon: 'architecture',
-      color: 'text-[var(--color-text-tertiary)]',
+      icon: DraftingCompass,
+      color: 'text-[#8a7770]',
     },
     {
       value: 'bypassPermissions',
       label: t('permMode.bypass'),
       description: t('permMode.bypassDesc'),
-      icon: 'gavel',
+      icon: Gavel,
       color: 'text-[var(--color-error)]',
     },
   ]
@@ -83,6 +95,7 @@ export function PermissionModeSelector({ workDir: workDirProp, value, onChange }
 
   const activeSession = sessions.find((s) => s.id === activeSessionId)
   const workDir = workDirProp || activeSession?.workDir || '~'
+  const CurrentIcon = MODE_ICONS[currentMode]
 
   useEffect(() => {
     if (!open) return
@@ -106,9 +119,9 @@ export function PermissionModeSelector({ workDir: workDirProp, value, onChange }
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[var(--color-surface-container-low)] hover:bg-[var(--color-surface-hover)] rounded-full text-xs font-medium text-[var(--color-text-secondary)] transition-colors"
       >
-        <span className="material-symbols-outlined text-[14px]">{MODE_ICONS[currentMode]}</span>
+        <CurrentIcon size={15} strokeWidth={2} className="text-[#554741]" />
         <span>{MODE_LABELS[currentMode]}</span>
-        <span className="material-symbols-outlined text-[12px]">expand_more</span>
+        <ChevronDown size={14} strokeWidth={2} className="text-[#554741]" />
       </button>
 
       {open && (
@@ -116,43 +129,40 @@ export function PermissionModeSelector({ workDir: workDirProp, value, onChange }
           <div className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-[var(--color-outline)]">
             {t('permMode.executionPermissions')}
           </div>
-          {PERMISSION_ITEMS.map((item) => (
-            <button
-              key={item.value}
-              onClick={() => {
-                if (item.value === 'bypassPermissions') {
+          {PERMISSION_ITEMS.map((item) => {
+            const ItemIcon = item.icon
+            return (
+              <button
+                key={item.value}
+                onClick={() => {
+                  if (item.value === 'bypassPermissions') {
+                    setOpen(false)
+                    setConfirmDialog(true)
+                    return
+                  }
+                  if (isControlled) {
+                    onChange?.(item.value)
+                  } else {
+                    void setPermissionMode(item.value)
+                    if (activeTabId) setSessionPermissionMode(activeTabId, item.value)
+                  }
                   setOpen(false)
-                  setConfirmDialog(true)
-                  return
-                }
-                if (isControlled) {
-                  onChange?.(item.value)
-                } else {
-                  void setPermissionMode(item.value)
-                  if (activeTabId) setSessionPermissionMode(activeTabId, item.value)
-                }
-                setOpen(false)
-              }}
-              className={`
-                w-full flex items-start gap-3 px-4 py-3 text-left transition-colors
-                hover:bg-[var(--color-surface-hover)]
-                ${item.value === currentMode ? 'bg-[var(--color-surface-selected)]' : ''}
-              `}
-            >
-              <span className={`material-symbols-outlined text-[20px] mt-0.5 ${item.color || 'text-[var(--color-text-secondary)]'}`}>
-                {item.icon}
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-semibold text-[var(--color-text-primary)]">{item.label}</div>
-                <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5">{item.description}</div>
-              </div>
-              {item.value === currentMode && (
-                <span className="material-symbols-outlined text-[16px] text-[var(--color-brand)] mt-0.5" style={{ fontVariationSettings: "'FILL' 1" }}>
-                  check_circle
+                }}
+                className="w-full flex items-start gap-3 px-4 py-3 text-left transition-colors hover:text-[var(--color-text-primary)]"
+              >
+                <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center ${item.color || 'text-[#554741]'}`}>
+                  <ItemIcon size={20} strokeWidth={2} />
                 </span>
-              )}
-            </button>
-          ))}
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-[var(--color-text-primary)]">{item.label}</div>
+                  <div className="text-xs text-[var(--color-text-tertiary)] mt-0.5">{item.description}</div>
+                </div>
+                {item.value === currentMode && (
+                  <CircleCheck size={18} strokeWidth={2.2} className="mt-0.5 shrink-0 text-[var(--color-brand)]" />
+                )}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -166,7 +176,7 @@ export function PermissionModeSelector({ workDir: workDirProp, value, onChange }
             {/* Header */}
             <div className="flex items-center gap-3 px-5 py-4 bg-[var(--color-error)]/8 border-b border-[var(--color-error)]/15">
               <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-[var(--color-error)]/12">
-                <span className="material-symbols-outlined text-[22px] text-[var(--color-error)]">warning</span>
+                <TriangleAlert size={22} strokeWidth={2} className="text-[var(--color-error)]" />
               </div>
               <div>
                 <div className="text-sm font-bold text-[var(--color-text-primary)]">{t('permMode.enableBypassTitle')}</div>
@@ -178,20 +188,20 @@ export function PermissionModeSelector({ workDir: workDirProp, value, onChange }
             <div className="px-5 py-4">
               <p className="text-xs text-[var(--color-text-secondary)] leading-relaxed mb-3" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(t('permMode.enableBypassBody')) }} />
               <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--color-surface-container)] border border-[var(--color-border)]" title={workDir}>
-                <span className="material-symbols-outlined text-[16px] text-[var(--color-text-tertiary)] shrink-0">folder</span>
+                <Folder size={16} strokeWidth={2} className="shrink-0 text-[#554741]" />
                 <code className="text-xs font-[var(--font-mono)] text-[var(--color-text-primary)] truncate">{workDir}</code>
               </div>
               <ul className="mt-3 space-y-1.5 text-xs text-[var(--color-text-secondary)]">
                 <li className="flex items-start gap-2">
-                  <span className="material-symbols-outlined text-[14px] text-[var(--color-error)] mt-0.5">check</span>
+                  <Check size={14} strokeWidth={2} className="mt-0.5 shrink-0 text-[var(--color-error)]" />
                   {t('permMode.permReadWrite')}
                 </li>
                 <li className="flex items-start gap-2">
-                  <span className="material-symbols-outlined text-[14px] text-[var(--color-error)] mt-0.5">check</span>
+                  <Check size={14} strokeWidth={2} className="mt-0.5 shrink-0 text-[var(--color-error)]" />
                   {t('permMode.permShell')}
                 </li>
                 <li className="flex items-start gap-2">
-                  <span className="material-symbols-outlined text-[14px] text-[var(--color-error)] mt-0.5">check</span>
+                  <Check size={14} strokeWidth={2} className="mt-0.5 shrink-0 text-[var(--color-error)]" />
                   {t('permMode.permPackages')}
                 </li>
               </ul>

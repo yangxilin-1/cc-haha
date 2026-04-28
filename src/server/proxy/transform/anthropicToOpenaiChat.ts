@@ -124,16 +124,21 @@ function convertUserMessage(blocks: AnthropicContentBlock[], output: OpenAIChatM
       contentParts.push({ type: 'image_url', image_url: { url } })
     } else if (block.type === 'tool_result') {
       // tool_result → separate tool message
-      const resultContent = typeof block.content === 'string'
-        ? block.content
-        : Array.isArray(block.content)
-          ? block.content.filter((b): b is Extract<AnthropicContentBlock, { type: 'text' }> => b.type === 'text').map((b) => b.text).join('\n')
-          : ''
+      const result = convertToolResultContent(block.content)
       output.push({
         role: 'tool',
         tool_call_id: block.tool_use_id,
-        content: resultContent,
+        content: result.text || (result.images.length > 0 ? '[tool returned image content]' : ''),
       })
+      if (result.images.length > 0) {
+        output.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: `Image output from tool ${block.tool_use_id}:` },
+            ...result.images,
+          ],
+        })
+      }
     }
   }
 
@@ -177,6 +182,27 @@ function convertAssistantMessage(blocks: AnthropicContentBlock[], output: OpenAI
   }
 
   output.push(msg)
+}
+
+function convertToolResultContent(content: unknown): { text: string; images: OpenAIChatContentPart[] } {
+  if (typeof content === 'string') return { text: content, images: [] }
+  if (!Array.isArray(content)) return { text: '', images: [] }
+
+  const text: string[] = []
+  const images: OpenAIChatContentPart[] = []
+  for (const block of content as AnthropicContentBlock[]) {
+    if (block.type === 'text') {
+      text.push(block.text)
+    } else if (block.type === 'image') {
+      images.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${block.source.media_type};base64,${block.source.data}`,
+        },
+      })
+    }
+  }
+  return { text: text.join('\n'), images }
 }
 
 function convertToolChoice(choice: unknown): unknown {

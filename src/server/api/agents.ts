@@ -13,19 +13,17 @@
 
 import { AgentService } from '../services/agentService.js'
 import { taskService } from '../services/taskService.js'
+import {
+  BUILT_IN_AGENTS,
+  getBuiltInAgent,
+  normalizeAgentName,
+} from '../config/builtInAgents.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
-import { resetTaskList } from '../../utils/tasks.js'
-import {
-  resolveAgentModelDisplay,
-  resolveAgentOverrides,
-  type ResolvedAgent,
-} from '../../tools/AgentTool/agentDisplay.js'
-import {
-  clearAgentDefinitionsCache,
-  getAgentDefinitionsWithOverrides,
-  type AgentDefinition as SharedAgentDefinition,
-} from '../../tools/AgentTool/loadAgentsDir.js'
-import { getCwd } from '../../utils/cwd.js'
+import type {
+  AgentDefinition,
+  AgentSource,
+  StoredAgentDefinition,
+} from '../services/agentService.js'
 
 const agentService = new AgentService()
 
@@ -56,22 +54,48 @@ async function handleAgents(
 ): Promise<Response> {
   const method = req.method
   const agentName = segments[2] ? decodeURIComponent(segments[2]) : undefined
+  const cwd = url.searchParams.get('cwd') || undefined
 
   // ── GET /api/agents ──────────────────────────────────────────────────
   if (method === 'GET' && !agentName) {
-    const cwd = url.searchParams.get('cwd') || getCwd()
-    const { activeAgents, allAgents } = await getAgentDefinitionsWithOverrides(cwd)
-    const resolvedAgents = resolveAgentOverrides(allAgents, activeAgents)
+    const storedAgents = await agentService.listStoredAgents(cwd)
+    const overrideByName = new Map<string, AgentSource>()
+    for (const agent of storedAgents) {
+      overrideByName.set(normalizeAgentName(agent.name), agent.source)
+    }
+
+    const storedSerialized = storedAgents.map((agent) => {
+      const normalized = normalizeAgentName(agent.name)
+      const overriddenBy = agent.source === 'userSettings' && overrideByName.get(normalized) === 'projectSettings'
+        ? 'projectSettings'
+        : undefined
+      return serializeAgent(agent, {
+        source: agent.source,
+        isActive: !overriddenBy,
+        baseDir: agent.baseDir,
+        overriddenBy,
+      })
+    })
+    const builtInSerialized = BUILT_IN_AGENTS.map((agent) => {
+      const overriddenBy = overrideByName.get(normalizeAgentName(agent.name))
+      return serializeAgent(agent, {
+        source: 'built-in',
+        isActive: !overriddenBy,
+        baseDir: 'Ycode built-in',
+        overriddenBy,
+      })
+    })
 
     return Response.json({
-      activeAgents: activeAgents.map(agent => serializeActiveAgent(agent, true)),
-      allAgents: resolvedAgents.map(serializeResolvedAgent),
+      activeAgents: [...storedSerialized, ...builtInSerialized]
+        .filter((agent) => agent.isActive),
+      allAgents: [...storedSerialized, ...builtInSerialized],
     })
   }
 
   // ── GET /api/agents/:name ────────────────────────────────────────────
   if (method === 'GET' && agentName) {
-    const agent = await agentService.getAgent(agentName)
+    const agent = await agentService.getAgent(agentName, cwd) ?? getBuiltInAgent(agentName)
     if (!agent) {
       throw ApiError.notFound(`Agent not found: ${agentName}`)
     }
@@ -91,8 +115,8 @@ async function handleAgents(
       tools: body.tools as string[] | undefined,
       systemPrompt: body.systemPrompt as string | undefined,
       color: body.color as string | undefined,
+      maxTurns: typeof body.maxTurns === 'number' ? body.maxTurns : undefined,
     })
-    clearAgentDefinitionsCache()
     return Response.json({ ok: true }, { status: 201 })
   }
 
@@ -100,7 +124,6 @@ async function handleAgents(
   if (method === 'PUT' && agentName) {
     const body = await parseJsonBody(req)
     await agentService.updateAgent(agentName, body as Record<string, unknown>)
-    clearAgentDefinitionsCache()
     const updated = await agentService.getAgent(agentName)
     return Response.json({ agent: updated })
   }
@@ -108,7 +131,6 @@ async function handleAgents(
   // ── DELETE /api/agents/:name ─────────────────────────────────────────
   if (method === 'DELETE' && agentName) {
     await agentService.deleteAgent(agentName)
-    clearAgentDefinitionsCache()
     return Response.json({ ok: true })
   }
 
@@ -138,7 +160,7 @@ async function handleTasksApi(
     const taskId = segments[4]
 
     if (req.method === 'POST' && taskListId && taskId === 'reset') {
-      await resetTaskList(taskListId)
+      await taskService.resetTaskList(taskListId)
       return Response.json({ ok: true })
     }
 
@@ -199,36 +221,34 @@ type ApiAgentDefinition = {
   tools?: string[]
   systemPrompt?: string
   color?: string
-  source: SharedAgentDefinition['source']
+  source: AgentSource | 'built-in'
   baseDir?: string
   isActive: boolean
+  overriddenBy?: AgentSource
 }
 
-type ApiResolvedAgentDefinition = ApiAgentDefinition & {
-  overriddenBy?: SharedAgentDefinition['source']
+type SerializeAgentOptions = {
+  source: ApiAgentDefinition['source']
+  isActive: boolean
+  baseDir?: string
+  overriddenBy?: ApiAgentDefinition['overriddenBy']
 }
 
-function serializeActiveAgent(
-  agent: SharedAgentDefinition,
-  isActive: boolean,
+function serializeAgent(
+  agent: AgentDefinition,
+  options: SerializeAgentOptions,
 ): ApiAgentDefinition {
   return {
-    agentType: agent.agentType,
-    description: agent.whenToUse,
+    agentType: agent.name,
+    description: agent.description,
     model: agent.model,
-    modelDisplay: resolveAgentModelDisplay(agent),
+    modelDisplay: agent.model || undefined,
     tools: agent.tools,
-    systemPrompt: agent.getSystemPrompt.length === 0 ? agent.getSystemPrompt() : undefined,
+    systemPrompt: agent.systemPrompt,
     color: agent.color,
-    source: agent.source,
-    baseDir: agent.baseDir,
-    isActive,
-  }
-}
-
-function serializeResolvedAgent(agent: ResolvedAgent): ApiResolvedAgentDefinition {
-  return {
-    ...serializeActiveAgent(agent, !agent.overriddenBy),
-    overriddenBy: agent.overriddenBy,
+    source: options.source,
+    baseDir: options.baseDir,
+    isActive: options.isActive,
+    overriddenBy: options.overriddenBy,
   }
 }

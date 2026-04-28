@@ -28,6 +28,13 @@ type RenderModel = {
   childToolCallsByParent: Map<string, ToolCall[]>
 }
 
+const PROVIDER_ERROR_CODES = new Set([
+  'INVALID_MODEL_ID',
+  'PROVIDER_REQUEST_FAILED',
+  'PROVIDER_NOT_CONFIGURED',
+  'PROVIDER_AUTH_FAILED',
+])
+
 function appendChildToolCall(
   childToolCallsByParent: Map<string, ToolCall[]>,
   parentToolUseId: string,
@@ -117,10 +124,17 @@ export function MessageList() {
   const activeThinkingId = sessionState?.activeThinkingId ?? null
   const agentTaskNotifications = sessionState?.agentTaskNotifications ?? {}
   const bottomRef = useRef<HTMLDivElement>(null)
+  const previousMessageCountRef = useRef(messages.length)
+  const showActivityIndicator = chatState !== 'idle'
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' })
-  }, [messages.length, streamingText])
+    const messageCountChanged = previousMessageCountRef.current !== messages.length
+    previousMessageCountRef.current = messages.length
+    bottomRef.current?.scrollIntoView?.({
+      behavior: messageCountChanged ? 'smooth' : 'auto',
+      block: 'end',
+    })
+  }, [messages.length, streamingText, chatState, activeThinkingId])
 
   const { toolResultMap, childToolCallsByParent, renderItems } = useMemo(
     () => buildRenderModel(messages),
@@ -128,7 +142,7 @@ export function MessageList() {
   )
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-4">
+    <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
       <div className="mx-auto max-w-[860px]">
         {renderItems.map((item) => {
           if (item.kind === 'tool_group') {
@@ -166,16 +180,12 @@ export function MessageList() {
           )
         })}
 
-        {streamingText && (
-          <AssistantMessage content={streamingText} isStreaming={chatState === 'streaming'} />
+        {showActivityIndicator && (
+          <StreamingIndicator />
         )}
 
-        {/* Show StreamingIndicator when:
-            - tool_executing: tool is running
-            - thinking but no active ThinkingBlock yet: the gap between
-              sending a message and receiving the first thinking delta */}
-        {(chatState === 'tool_executing' || (chatState === 'thinking' && !activeThinkingId)) && (
-          <StreamingIndicator />
+        {streamingText && (
+          <AssistantMessage content={streamingText} isStreaming={chatState === 'streaming'} />
         )}
 
         <div ref={bottomRef} />
@@ -244,21 +254,34 @@ export const MessageBlock = memo(function MessageBlock({
         />
       )
     case 'error': {
-      const errorKey = message.code ? `error.${message.code}` as TranslationKey : null
+      const normalizedCode = normalizeErrorCode(message.code, message.message)
+      const errorKey = normalizedCode ? `error.${normalizedCode}` as TranslationKey : null
       const errorText = errorKey ? t(errorKey) : null
       const displayMessage = (errorText && errorText !== errorKey) ? errorText : message.message
-      const showRawDetail =
-        Boolean(message.message) &&
-        message.message.trim() !== '' &&
-        message.message !== displayMessage
+      const showRawDetail = shouldShowRawErrorDetail(
+        normalizedCode,
+        message.message,
+        displayMessage,
+      )
       return (
-        <div className="mb-3 px-4 py-2.5 rounded-lg border border-[var(--color-error)]/20 bg-[var(--color-error-container)]/28 text-sm text-[var(--color-error)]">
-          <strong>Error:</strong> {displayMessage}
-          {showRawDetail && (
-            <div className="mt-1 whitespace-pre-wrap text-xs text-[var(--color-on-error-container)]/85">
-              {message.message}
-            </div>
-          )}
+        <div
+          role="alert"
+          className="mb-4 flex items-start gap-3 rounded-lg border border-[var(--color-error)]/20 bg-[var(--color-error-container)]/28 px-4 py-3 text-sm text-[var(--color-error)]"
+        >
+          <span
+            className="material-symbols-outlined mt-0.5 text-[18px]"
+            aria-hidden="true"
+          >
+            error
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold leading-6">{displayMessage}</div>
+            {showRawDetail && (
+              <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-[var(--color-on-error-container)]/85">
+                {message.message}
+              </div>
+            )}
+          </div>
         </div>
       )
     }
@@ -272,3 +295,42 @@ export const MessageBlock = memo(function MessageBlock({
       )
   }
 })
+
+function normalizeErrorCode(code: string | undefined, message: string): string | null {
+  if (code === 'INVALID_MODEL_ID' || isInvalidModelError(message)) {
+    return 'INVALID_MODEL_ID'
+  }
+  return code || null
+}
+
+function isInvalidModelError(message: string): boolean {
+  return /\bINVALID_MODEL_ID\b/i.test(message) || /\binvalid model\b/i.test(message)
+}
+
+function shouldShowRawErrorDetail(
+  normalizedCode: string | null,
+  message: string,
+  displayMessage: string,
+): boolean {
+  const trimmed = message.trim()
+  if (!trimmed || trimmed === displayMessage) return false
+
+  if (normalizedCode && PROVIDER_ERROR_CODES.has(normalizedCode)) {
+    return false
+  }
+
+  if (looksLikeProviderPayload(trimmed)) {
+    return false
+  }
+
+  return true
+}
+
+function looksLikeProviderPayload(message: string): boolean {
+  return (
+    message.includes('Provider request failed') ||
+    message.includes('"error"') ||
+    message.includes('上游 API 调用失败') ||
+    message.includes('流式 API 请求失败')
+  )
+}

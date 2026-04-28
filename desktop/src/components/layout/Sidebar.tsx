@@ -1,11 +1,13 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { Folder as FolderIcon } from 'lucide-react'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
+import { useModeStore } from '../../stores/modeStore'
 import { useTranslation } from '../../i18n'
-import { ProjectFilter } from './ProjectFilter'
 import type { SessionListItem } from '../../types/session'
 import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
+import { useProjectStore, basenameOf } from '../../stores/projectStore'
 
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
 const isWindows = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
@@ -21,16 +23,27 @@ export function Sidebar() {
   const fetchSessions = useSessionStore((s) => s.fetchSessions)
   const deleteSession = useSessionStore((s) => s.deleteSession)
   const renameSession = useSessionStore((s) => s.renameSession)
-  const addToast = useUIStore((s) => s.addToast)
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const closeTab = useTabStore((s) => s.closeTab)
   const disconnectSession = useChatStore((s) => s.disconnectSession)
+  const currentMode = useModeStore((s) => s.currentMode)
+  const aliases = useProjectStore((s) => s.aliases)
+  const hidden = useProjectStore((s) => s.hidden)
+  const expanded = useProjectStore((s) => s.expanded)
+  const setAlias = useProjectStore((s) => s.setAlias)
+  const hideProject = useProjectStore((s) => s.hideProject)
+  const toggleExpanded = useProjectStore((s) => s.toggleExpanded)
+  const setExpanded = useProjectStore((s) => s.setExpanded)
+  const setSelectedWorkDir = useProjectStore((s) => s.setSelectedWorkDir)
   const [searchQuery, setSearchQuery] = useState('')
   const [contextMenu, setContextMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [projectMenu, setProjectMenu] = useState<{ workDir: string; x: number; y: number } | null>(null)
+  const [renamingWorkDir, setRenamingWorkDir] = useState<string | null>(null)
+  const [projectRenameValue, setProjectRenameValue] = useState('')
 
   useEffect(() => {
     fetchSessions()
@@ -48,8 +61,17 @@ export function Sidebar() {
     return () => document.removeEventListener('click', close)
   }, [contextMenu])
 
+  useEffect(() => {
+    if (!projectMenu) return
+    const close = () => setProjectMenu(null)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [projectMenu])
+
   const filteredSessions = useMemo(() => {
     let result = sessions
+    // 按当前全局模式过滤（旧会话无 mode 字段时默认视为 code）
+    result = result.filter((s) => (s.mode ?? 'code') === currentMode)
     if (selectedProjects.length > 0) {
       result = result.filter((s) => selectedProjects.includes(s.projectPath))
     }
@@ -58,9 +80,37 @@ export function Sidebar() {
       result = result.filter((s) => s.title.toLowerCase().includes(q))
     }
     return result
-  }, [sessions, selectedProjects, searchQuery])
+  }, [sessions, selectedProjects, searchQuery, currentMode])
 
   const timeGroups = useMemo(() => groupByTime(filteredSessions), [filteredSessions])
+
+  // Code 模式按 workDir 分组
+  const projectGroups = useMemo(() => {
+    if (currentMode !== 'code') return [] as { workDir: string; items: SessionListItem[]; latest: number }[]
+    const map = new Map<string, SessionListItem[]>()
+    for (const s of filteredSessions) {
+      const key = s.workDir ?? ''
+      if (hidden.includes(key)) continue
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(s)
+    }
+    return [...map.entries()]
+      .map(([workDir, items]) => {
+        const sorted = [...items].sort(
+          (a, b) => new Date(b.modifiedAt).getTime() - new Date(a.modifiedAt).getTime(),
+        )
+        const latest = Math.max(...items.map((i) => new Date(i.modifiedAt).getTime()))
+        return { workDir, items: sorted, latest }
+      })
+      .sort((a, b) => b.latest - a.latest)
+  }, [filteredSessions, currentMode, hidden])
+
+  // 当前活动会话所在项目自动展开
+  useEffect(() => {
+    if (currentMode !== 'code' || !activeTabId) return
+    const s = sessions.find((x) => x.id === activeTabId)
+    if (s && s.workDir) setExpanded(s.workDir, true)
+  }, [currentMode, activeTabId, sessions, setExpanded])
 
   const handleContextMenu = useCallback((e: React.MouseEvent, id: string) => {
     e.preventDefault()
@@ -100,12 +150,78 @@ export function Sidebar() {
       .catch(() => {})
   }, [])
 
+  const t = useTranslation()
+
+  const handleOpenSession = useCallback((session: SessionListItem) => {
+    useTabStore.getState().openTab(session.id, session.title)
+    useSessionStore.getState().setActiveSession(session.id)
+    useSessionStore.getState().setCurrentView('session')
+    useChatStore.getState().connectToSession(session.id)
+  }, [])
+
+  const renderSessionRow = useCallback((session: SessionListItem) => (
+    <div key={session.id} className="relative">
+      {renamingId === session.id ? (
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={handleFinishRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleFinishRename()
+            if (e.key === 'Escape') {
+              setRenamingId(null)
+              setRenameValue('')
+            }
+          }}
+          className="ml-1 w-full rounded-[var(--radius-md)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none"
+        />
+      ) : (
+        <button
+          onClick={() => handleOpenSession(session)}
+          onContextMenu={(e) => handleContextMenu(e, session.id)}
+          className={`
+            group relative w-full rounded-[var(--radius-md)] py-1.5 pl-4 pr-3 text-left text-sm transition-all duration-150 ease-out
+            ${session.id === activeTabId
+              ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]'
+              : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:translate-x-[1px]'
+            }
+          `}
+        >
+          <span
+            aria-hidden="true"
+            className={`pointer-events-none absolute left-0 top-1/2 -translate-y-1/2 h-4 w-[2px] rounded-full bg-[var(--color-brand)] transition-opacity duration-150 ${session.id === activeTabId ? 'opacity-100' : 'opacity-0'}`}
+          />
+          <span className="flex items-center gap-2">
+            <span
+              className="h-1 w-1 flex-shrink-0 rounded-full transition-colors duration-150"
+              style={{
+                backgroundColor: session.id === activeTabId ? 'var(--color-brand)' : 'var(--color-text-tertiary)',
+                opacity: session.id === activeTabId ? 1 : 0.5,
+              }}
+            />
+            <span className="flex-1 truncate">{session.title || 'Untitled'}</span>
+            {session.mode !== 'chat' && !session.workDirExists && (
+              <span
+                className="flex-shrink-0 text-[10px] text-[var(--color-warning)]"
+                title={session.workDir ?? ''}
+              >
+                {t('sidebar.missingDir')}
+              </span>
+            )}
+            <span className="flex-shrink-0 text-[10px] text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100">
+              {formatRelativeTime(session.modifiedAt)}
+            </span>
+          </span>
+        </button>
+      )}
+    </div>
+  ), [activeTabId, handleContextMenu, handleFinishRename, handleOpenSession, renameValue, renamingId, t])
+
   const handleSidebarDrag = useCallback((e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest('button, input, textarea, select, a, [role="button"]')) return
     startDraggingRef.current?.()
   }, [])
-
-  const t = useTranslation()
 
   const timeGroupLabels: Record<TimeGroup, string> = {
     today: t('sidebar.timeGroup.today'),
@@ -123,39 +239,17 @@ export function Sidebar() {
       aria-label="Sidebar"
     >
       <div className={`px-3 pb-2 ${isTauri && !isWindows ? 'pt-[44px]' : 'pt-3'}`}>
-        <div className={`flex ${sidebarOpen ? 'items-center justify-between gap-3' : 'flex-col items-center gap-2'}`}>
-          <div className={`flex min-w-0 items-center ${sidebarOpen ? 'gap-2.5' : 'justify-center'}`}>
-            <img src="/app-icon.jpg" alt="" className="h-8 w-8 rounded-lg flex-shrink-0" />
-            <span
-              className={`sidebar-copy ${sidebarOpen ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} text-[13px] font-semibold tracking-tight text-[var(--color-text-primary)]`}
-              style={{ fontFamily: 'var(--font-headline)' }}
-            >
-              Claude Code <span className="text-[var(--color-primary-container)]">Haha</span>
-            </span>
-          </div>
-          <div className={`flex items-center ${sidebarOpen ? 'gap-1.5' : 'flex-col gap-2'}`}>
-            <a
-              href="https://github.com/NanmiCoder/cc-haha"
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`sidebar-copy ${sidebarOpen ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]`}
-              title="GitHub"
-              tabIndex={sidebarOpen ? undefined : -1}
-              aria-hidden={!sidebarOpen}
-            >
-              <GitHubIcon />
-            </a>
-            <button
-              type="button"
-              onClick={toggleSidebar}
-              data-testid={sidebarOpen ? 'sidebar-collapse-button' : 'sidebar-expand-button'}
-              className={`sidebar-toggle-button ${sidebarOpen ? 'sidebar-toggle-button--open h-8 w-8' : 'sidebar-toggle-button--collapsed h-8 w-8'} flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-sidebar)]`}
-              aria-label={sidebarOpen ? t('sidebar.collapse') : t('sidebar.expand')}
-              title={sidebarOpen ? t('sidebar.collapse') : t('sidebar.expand')}
-            >
-              <SidebarToggleIcon collapsed={!sidebarOpen} />
-            </button>
-          </div>
+        <div className="flex items-center justify-start">
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            data-testid={sidebarOpen ? 'sidebar-collapse-button' : 'sidebar-expand-button'}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
+            aria-label={sidebarOpen ? t('sidebar.collapse') : t('sidebar.expand')}
+            title={sidebarOpen ? t('sidebar.collapse') : t('sidebar.expand')}
+          >
+            <SidebarPanelIcon />
+          </button>
         </div>
       </div>
 
@@ -164,21 +258,14 @@ export function Sidebar() {
           active={false}
           collapsed={!sidebarOpen}
           label={t('sidebar.newSession')}
-          onClick={async () => {
-            try {
-              const currentTabId = useTabStore.getState().activeTabId
-              const currentSession = currentTabId
-                ? useSessionStore.getState().sessions.find((s) => s.id === currentTabId)
-                : null
-              const workDir = currentSession?.workDir || undefined
-              const sessionId = await useSessionStore.getState().createSession(workDir)
-              useTabStore.getState().openTab(sessionId, t('sidebar.newSession'))
-              useChatStore.getState().connectToSession(sessionId)
-            } catch (error) {
-              addToast({
-                type: 'error',
-                message: error instanceof Error ? error.message : t('sidebar.sessionListFailed'),
-              })
+          onClick={() => {
+            // 不预创建 session，仅切回空状态页
+            useSessionStore.getState().setActiveSession(null)
+            useSessionStore.getState().setCurrentView('empty')
+            useTabStore.setState({ activeTabId: null })
+            // Chat 模式不带 workDir；Code 模式清空选中的项目让用户自由选择
+            if (currentMode === 'chat') {
+              setSelectedWorkDir(null)
             }
           }}
           icon={<PlusIcon />}
@@ -189,7 +276,10 @@ export function Sidebar() {
           active={activeTabId === SCHEDULED_TAB_ID}
           collapsed={!sidebarOpen}
           label={t('sidebar.scheduled')}
-          onClick={() => useTabStore.getState().openTab(SCHEDULED_TAB_ID, t('sidebar.scheduled'), 'scheduled')}
+          onClick={() => {
+            useTabStore.getState().openTab(SCHEDULED_TAB_ID, t('sidebar.scheduled'), 'scheduled')
+            useSessionStore.getState().setCurrentView('scheduled')
+          }}
           icon={<ClockIcon />}
         >
           {t('sidebar.scheduled')}
@@ -198,17 +288,7 @@ export function Sidebar() {
 
       {sidebarOpen ? (
         <>
-          <div
-            data-testid="sidebar-project-filter-section"
-            className="sidebar-section sidebar-section--visible relative z-20 flex-none px-3 pb-1"
-            style={{ overflow: 'visible' }}
-          >
-            <div className="flex items-center justify-between">
-              <ProjectFilter />
-            </div>
-          </div>
-
-          <div className="sidebar-section sidebar-section--visible flex-none px-3 pb-2">
+          <div className="sidebar-section sidebar-section--visible flex-none px-3 pb-2 pt-1">
             <input
               id="sidebar-search"
               type="text"
@@ -241,74 +321,117 @@ export function Sidebar() {
                   {searchQuery ? t('sidebar.noMatching') : t('sidebar.noSessions')}
                 </div>
               )}
-              {TIME_GROUP_ORDER.map((group) => {
-                const items = timeGroups.get(group)
-                if (!items || items.length === 0) return null
-                return (
-                  <div key={group} className="mb-1">
-                    <div className="px-2 pb-1 pt-3 text-[11px] font-semibold tracking-wide text-[var(--color-text-tertiary)]">
-                      {timeGroupLabels[group]}
+              {currentMode === 'code' ? (
+                <>
+                  {projectGroups.length === 0 && filteredSessions.length > 0 && (
+                    <div className="px-3 py-4 text-center text-xs text-[var(--color-text-tertiary)]">
+                      {t('sidebar.noMatching')}
                     </div>
-                    {items.map((session) => (
-                      <div key={session.id} className="relative">
-                        {renamingId === session.id ? (
-                          <input
-                            autoFocus
-                            value={renameValue}
-                            onChange={(e) => setRenameValue(e.target.value)}
-                            onBlur={handleFinishRename}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') handleFinishRename()
-                              if (e.key === 'Escape') {
-                                setRenamingId(null)
-                                setRenameValue('')
-                              }
-                            }}
-                            className="ml-1 w-full rounded-[var(--radius-md)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none"
-                          />
-                        ) : (
+                  )}
+                  {projectGroups.map(({ workDir, items }) => {
+                    const isOpen = expanded[workDir] ?? false
+                    const display = aliases[workDir] || basenameOf(workDir)
+                    const isRenaming = renamingWorkDir === workDir
+                    return (
+                      <div key={workDir || '__none__'} className="mb-2 mt-3">
+                        <div className="group flex items-center gap-1.5 rounded-[var(--radius-md)] px-1.5 py-1 hover:bg-[var(--color-surface-hover)]">
                           <button
-                            onClick={() => {
-                              useTabStore.getState().openTab(session.id, session.title)
-                              useChatStore.getState().connectToSession(session.id)
-                            }}
-                            onContextMenu={(e) => handleContextMenu(e, session.id)}
-                            className={`
-                              group w-full rounded-[var(--radius-md)] py-1.5 pl-4 pr-3 text-left text-sm transition-colors duration-200
-                              ${session.id === activeTabId
-                                ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
-                                : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
-                              }
-                            `}
+                            type="button"
+                            onClick={() => toggleExpanded(workDir)}
+                            className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-[#554741] hover:text-[var(--color-text-primary)]"
+                            aria-label={isOpen ? 'Collapse' : 'Expand'}
                           >
-                            <span className="flex items-center gap-2">
-                              <span
-                                className="h-1 w-1 flex-shrink-0 rounded-full"
-                                style={{
-                                  backgroundColor: session.id === activeTabId ? 'var(--color-brand)' : 'var(--color-text-tertiary)',
-                                  opacity: session.id === activeTabId ? 1 : 0.5,
-                                }}
-                              />
-                              <span className="flex-1 truncate">{session.title || 'Untitled'}</span>
-                              {!session.workDirExists && (
-                                <span
-                                  className="flex-shrink-0 text-[10px] text-[var(--color-warning)]"
-                                  title={session.workDir ?? ''}
-                                >
-                                  {t('sidebar.missingDir')}
-                                </span>
-                              )}
-                              <span className="flex-shrink-0 text-[10px] text-[var(--color-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100">
-                                {formatRelativeTime(session.modifiedAt)}
-                              </span>
-                            </span>
+                            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>
+                              <path d="M4 2.5 6.5 5 4 7.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
                           </button>
-                        )}
+                          <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-[#554741]">
+                            <FolderIcon size={14} strokeWidth={2} />
+                          </span>
+                          {isRenaming ? (
+                            <input
+                              autoFocus
+                              value={projectRenameValue}
+                              onChange={(e) => setProjectRenameValue(e.target.value)}
+                              onBlur={() => {
+                                const v = projectRenameValue.trim()
+                                if (v) setAlias(workDir, v)
+                                setRenamingWorkDir(null)
+                                setProjectRenameValue('')
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+                                if (e.key === 'Escape') {
+                                  setRenamingWorkDir(null)
+                                  setProjectRenameValue('')
+                                }
+                              }}
+                              className="flex-1 rounded-[var(--radius-sm)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] px-2 py-0.5 text-[12px] text-[var(--color-text-primary)] outline-none"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedWorkDir(workDir || null)
+                                useSessionStore.getState().setActiveSession(null)
+                                useSessionStore.getState().setCurrentView('empty')
+                              }}
+                              title={workDir || 'Unknown'}
+                              className="flex-1 truncate text-left text-[13px] text-[var(--color-text-primary)]"
+                            >
+                              {display || 'Unknown'}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setProjectMenu({ workDir, x: e.clientX, y: e.clientY })
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] opacity-0 transition hover:bg-[var(--color-surface)] hover:text-[var(--color-text-primary)] group-hover:opacity-100"
+                            aria-label="More"
+                            title="More"
+                          >
+                            <MoreDotsIcon />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              // 不预创建 session，仅记录 workDir 选中 + 切回空状态页
+                              setSelectedWorkDir(workDir || null)
+                              useSessionStore.getState().setActiveSession(null)
+                              useSessionStore.getState().setCurrentView('empty')
+                              useTabStore.setState({ activeTabId: null })
+                            }}
+                            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-text-tertiary)] opacity-0 transition hover:bg-[var(--color-surface)] hover:text-[var(--color-text-primary)] group-hover:opacity-100"
+                            aria-label={t('sidebar.newSession')}
+                            title={t('sidebar.newSession')}
+                          >
+                            <EditIcon />
+                          </button>
+                        </div>
+                        <div className="mt-0.5">
+                          {isOpen && items.map((session) => renderSessionRow(session))}
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                )
-              })}
+                    )
+                  })}
+                </>
+              ) : (
+                TIME_GROUP_ORDER.map((group) => {
+                  const items = timeGroups.get(group)
+                  if (!items || items.length === 0) return null
+                  return (
+                    <div key={group} className="mb-1">
+                      <div className="px-2 pb-1 pt-3 text-[11px] font-semibold tracking-wide text-[var(--color-text-tertiary)]">
+                        {timeGroupLabels[group]}
+                      </div>
+                      {items.map((session) => renderSessionRow(session))}
+                    </div>
+                  )
+                })
+              )}
             </div>
           </div>
         </>
@@ -321,7 +444,10 @@ export function Sidebar() {
           active={activeTabId === SETTINGS_TAB_ID}
           collapsed={!sidebarOpen}
           label={t('sidebar.settings')}
-          onClick={() => useTabStore.getState().openTab(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings')}
+          onClick={() => {
+            useTabStore.getState().openTab(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings')
+            useSessionStore.getState().setCurrentView('settings')
+          }}
           icon={<span className="material-symbols-outlined text-[18px]">settings</span>}
         >
           {t('sidebar.settings')}
@@ -347,6 +473,33 @@ export function Sidebar() {
             className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-error)] transition-colors hover:bg-[var(--color-surface-hover)]"
           >
             {t('common.delete')}
+          </button>
+        </div>
+      )}
+      {projectMenu && sidebarOpen && (
+        <div
+          className="fixed z-50 min-w-[160px] rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] py-1"
+          style={{ left: projectMenu.x, top: projectMenu.y, boxShadow: 'var(--shadow-dropdown)' }}
+        >
+          <button
+            onClick={() => {
+              const wd = projectMenu.workDir
+              setRenamingWorkDir(wd)
+              setProjectRenameValue(aliases[wd] || basenameOf(wd))
+              setProjectMenu(null)
+            }}
+            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+          >
+            {t('common.rename')}
+          </button>
+          <button
+            onClick={() => {
+              hideProject(projectMenu.workDir)
+              setProjectMenu(null)
+            }}
+            className="w-full px-3 py-1.5 text-left text-xs text-[var(--color-error)] transition-colors hover:bg-[var(--color-surface-hover)]"
+          >
+            移除项目
           </button>
         </div>
       )}
@@ -429,10 +582,30 @@ function formatRelativeTime(dateStr: string): string {
   return `${Math.floor(day / 30)}mo`
 }
 
-function GitHubIcon() {
+function SidebarPanelIcon() {
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="9" y1="4" x2="9" y2="20" />
+    </svg>
+  )
+}
+
+function MoreDotsIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+      <circle cx="3" cy="7" r="1.25" />
+      <circle cx="7" cy="7" r="1.25" />
+      <circle cx="11" cy="7" r="1.25" />
+    </svg>
+  )
+}
+
+function EditIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
     </svg>
   )
 }
@@ -451,24 +624,6 @@ function ClockIcon() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="10" />
       <polyline points="12 6 12 12 16 14" />
-    </svg>
-  )
-}
-
-function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg
-      width={collapsed ? 16 : 14}
-      height={collapsed ? 16 : 14}
-      viewBox="0 0 14 14"
-      fill="none"
-      className={`sidebar-toggle-icon ${collapsed ? 'sidebar-toggle-icon--collapsed' : 'sidebar-toggle-icon--open'}`}
-      aria-hidden="true"
-    >
-      <path
-        d={collapsed ? 'M5 3 9 7l-4 4' : 'M9 3 5 7l4 4'}
-        className="sidebar-toggle-chevron"
-      />
     </svg>
   )
 }

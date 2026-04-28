@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { SessionListItem, MessageEntry } from '../types/session'
+import type { SessionListItem, MessageEntry, SessionMode } from '../types/session'
 
 type SessionsResponse = { sessions: SessionListItem[]; total: number }
 type MessagesResponse = { messages: MessageEntry[] }
@@ -30,8 +30,11 @@ export const sessionsApi = {
     return api.get<MessagesResponse>(`/api/sessions/${sessionId}/messages`)
   },
 
-  create(workDir?: string) {
-    return api.post<CreateSessionResponse>('/api/sessions', workDir ? { workDir } : {})
+  create(workDir?: string, mode?: SessionMode) {
+    const body: { workDir?: string; mode?: SessionMode } = {}
+    if (workDir) body.workDir = workDir
+    if (mode) body.mode = mode
+    return api.post<CreateSessionResponse>('/api/sessions', body)
   },
 
   delete(sessionId: string) {

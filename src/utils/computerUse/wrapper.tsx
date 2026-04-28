@@ -27,7 +27,11 @@ import { registerEscHotkey } from './escHotkey.js';
 import { getChicagoCoordinateMode } from './gates.js';
 import { getComputerUseHostAdapter } from './hostAdapter.js';
 import { getComputerUseMCPRenderingOverrides } from './toolRendering.js';
-import { resolveStoredComputerUseConfig } from './preauthorizedConfig.js';
+import {
+  COMPUTER_WIDE_ACCESS_BUNDLE_ID,
+  COMPUTER_WIDE_ACCESS_DISPLAY_NAME,
+  resolveStoredComputerUseConfig,
+} from './preauthorizedConfig.js';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -52,7 +56,16 @@ type Binding = {
  */
 let binding: Binding | undefined;
 let currentToolUseContext: ToolUseContext | undefined;
-const desktopServerUrl = process.env.CC_HAHA_DESKTOP_SERVER_URL;
+const desktopServerUrl = process.env.YCODE_DESKTOP_SERVER_URL;
+
+function normalizeAppKey(value: string): string {
+  const raw = String(value ?? '').trim()
+  return raw
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '') || raw.toLowerCase()
+}
+
 function tuc(): ToolUseContext {
   // Safe: `binding` is only populated when `currentToolUseContext` is set.
   // Called only from within `ctx` callbacks, which only fire during dispatch.
@@ -92,7 +105,7 @@ export function buildSessionContext(): ComputerUseSessionContext {
       const cu = prev.computerUseMcpState;
       const prevApps = cu?.allowedApps;
       const prevFlags = cu?.grantFlags;
-      const sameApps = prevApps?.length === apps.length && apps.every((a, i) => prevApps[i]?.bundleId === a.bundleId);
+      const sameApps = prevApps?.length === apps.length && apps.every((a, i) => normalizeAppKey(prevApps[i]?.bundleId ?? '') === normalizeAppKey(a.bundleId));
       const sameFlags = prevFlags?.clipboardRead === flags.clipboardRead && prevFlags?.clipboardWrite === flags.clipboardWrite && prevFlags?.systemKeyCombos === flags.systemKeyCombos;
       return sameApps && sameFlags ? prev : {
         ...prev,
@@ -264,7 +277,7 @@ async function runDesktopPermissionDialog(
 }
 
 /**
- * Load pre-authorized apps from ~/.claude/cc-haha/computer-use-config.json.
+ * Load pre-authorized apps from Ycode data dir computer-use-config.json.
  * Called once when the binding is first created. Pre-authorized apps
  * are injected into appState so `getAllowedApps()` returns them
  * immediately — no runtime permission dialog needed.
@@ -274,13 +287,14 @@ async function loadPreAuthorizedApps(): Promise<void> {
     | {
         authorizedApps?: { bundleId: string; displayName: string }[]
         grantFlags?: { clipboardRead?: boolean; clipboardWrite?: boolean; systemKeyCombos?: boolean }
+        computerWideAccess?: boolean
       }
     | undefined
 
   try {
+    const { getAppDataDir } = await import('../../server/utils/paths.js')
     const configPath = join(
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
-      'cc-haha',
+      getAppDataDir(),
       'computer-use-config.json',
     )
     const raw = await readFile(configPath, 'utf8')
@@ -300,6 +314,14 @@ async function loadPreAuthorizedApps(): Promise<void> {
     grantedAt: Date.now(),
     tier: 'full' as const,
   }))
+  if (resolved.computerWideAccess) {
+    apps.unshift({
+      bundleId: COMPUTER_WIDE_ACCESS_BUNDLE_ID,
+      displayName: COMPUTER_WIDE_ACCESS_DISPLAY_NAME,
+      grantedAt: Date.now(),
+      tier: 'full' as const,
+    })
+  }
   const flags = {
     ...DEFAULT_GRANT_FLAGS,
     ...resolved.grantFlags,
@@ -309,8 +331,8 @@ async function loadPreAuthorizedApps(): Promise<void> {
   // desktop settings immediately, even when no apps are pre-authorized yet.
   currentToolUseContext.setAppState(prev => {
     const existing = prev.computerUseMcpState?.allowedApps ?? []
-    const existingIds = new Set(existing.map(a => a.bundleId))
-    const merged = [...existing, ...apps.filter(a => !existingIds.has(a.bundleId))]
+    const existingIds = new Set(existing.map(a => normalizeAppKey(a.bundleId)))
+    const merged = [...existing, ...apps.filter(a => !existingIds.has(normalizeAppKey(a.bundleId)))]
     const currentFlags = prev.computerUseMcpState?.grantFlags
     const sameFlags =
       currentFlags?.clipboardRead === flags.clipboardRead &&

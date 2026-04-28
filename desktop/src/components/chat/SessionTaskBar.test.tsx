@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { SessionTaskBar } from './SessionTaskBar'
-import { useCLITaskStore } from '../../stores/cliTaskStore'
+import { useDesktopTaskStore } from '../../stores/desktopTaskStore'
 
-vi.mock('../../api/cliTasks', () => ({
-  cliTasksApi: {
+vi.mock('../../api/desktopTasks', () => ({
+  desktopTasksApi: {
     getTasksForList: vi.fn(),
     resetTaskList: vi.fn(async () => ({ ok: true })),
   },
@@ -24,7 +24,7 @@ vi.mock('../../i18n', () => ({
 
 describe('SessionTaskBar', () => {
   beforeEach(() => {
-    useCLITaskStore.setState({
+    useDesktopTaskStore.setState({
       sessionId: 'session-1',
       tasks: [],
       expanded: false,
@@ -34,12 +34,12 @@ describe('SessionTaskBar', () => {
   })
 
   afterEach(() => {
-    useCLITaskStore.getState().clearTasks()
+    useDesktopTaskStore.getState().clearTasks()
   })
 
   it('only shows the dismiss button once every task is completed', () => {
     act(() => {
-      useCLITaskStore.getState().setTasksFromTodos([
+      useDesktopTaskStore.getState().setTasksFromTodos([
         { content: 'first', status: 'completed' },
         { content: 'second', status: 'in_progress', activeForm: 'working' },
       ])
@@ -55,7 +55,7 @@ describe('SessionTaskBar', () => {
 
   it('hides the bar after dismissing a completed task set', async () => {
     act(() => {
-      useCLITaskStore.getState().setTasksFromTodos([
+      useDesktopTaskStore.getState().setTasksFromTodos([
         { content: 'first', status: 'completed' },
         { content: 'second', status: 'completed' },
       ])
@@ -71,12 +71,12 @@ describe('SessionTaskBar', () => {
     })
 
     expect(screen.queryByText('Tasks')).toBeNull()
-    expect(useCLITaskStore.getState().tasks).toEqual([])
+    expect(useDesktopTaskStore.getState().tasks).toEqual([])
   })
 
   it('shows the bar again for a new task cycle after a previous completed set was dismissed', () => {
     act(() => {
-      useCLITaskStore.getState().setTasksFromTodos([
+      useDesktopTaskStore.getState().setTasksFromTodos([
         { content: 'first', status: 'completed' },
       ])
     })
@@ -89,7 +89,7 @@ describe('SessionTaskBar', () => {
     expect(screen.queryByText('Tasks')).toBeNull()
 
     act(() => {
-      useCLITaskStore.getState().setTasksFromTodos([
+      useDesktopTaskStore.getState().setTasksFromTodos([
         { content: 'next task', status: 'in_progress', activeForm: 'running next task' },
       ])
     })
@@ -98,7 +98,7 @@ describe('SessionTaskBar', () => {
     expect(screen.queryByRole('button', { name: 'Hide completed tasks' })).toBeNull()
 
     act(() => {
-      useCLITaskStore.getState().setTasksFromTodos([
+      useDesktopTaskStore.getState().setTasksFromTodos([
         { content: 'next task', status: 'completed' },
       ])
     })

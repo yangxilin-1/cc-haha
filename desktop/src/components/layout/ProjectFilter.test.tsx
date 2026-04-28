@@ -44,7 +44,7 @@ describe('ProjectFilter', () => {
       selectedProjects: [],
       availableProjects: [
         'Users-nanmi-workspace-myself_code-OpenCutSkill',
-        'Users-nanmi-workspace-myself_code-claude-code-haha',
+        'Users-nanmi-workspace-myself_code-Ycode',
       ],
     })
   })
@@ -53,11 +53,11 @@ describe('ProjectFilter', () => {
     getRecentProjectsMock.mockResolvedValue({
       projects: [
         {
-          projectPath: 'Users-nanmi-workspace-myself_code-claude-code-haha',
-          realPath: '/Users/nanmi/workspace/myself_code/claude-code-haha',
-          projectName: 'claude-code-haha',
+          projectPath: 'Users-nanmi-workspace-myself_code-Ycode',
+          realPath: '/Users/nanmi/workspace/myself_code/Ycode',
+          projectName: 'Ycode',
           isGit: true,
-          repoName: 'NanmiCoder/cc-haha',
+          repoName: 'NanmiCoder/Ycode',
           branch: 'main',
           modifiedAt: '2026-04-20T10:00:00.000Z',
           sessionCount: 4,
@@ -80,17 +80,17 @@ describe('ProjectFilter', () => {
     fireEvent.click(screen.getByRole('button', { name: /All projects/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('NanmiCoder/cc-haha')).toBeInTheDocument()
-      expect(screen.getByText('/Users/nanmi/workspace/myself_code/claude-code-haha')).toBeInTheDocument()
+      expect(screen.getByText('NanmiCoder/Ycode')).toBeInTheDocument()
+      expect(screen.getByText('/Users/nanmi/workspace/myself_code/Ycode')).toBeInTheDocument()
       expect(screen.getByText('NanmiCoder/OpenCutSkill')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: /NanmiCoder\/cc-haha/i }))
+    fireEvent.click(screen.getByRole('button', { name: /NanmiCoder\/Ycode/i }))
 
     await waitFor(() => {
-      expect(useSessionStore.getState().selectedProjects).toEqual(['Users-nanmi-workspace-myself_code-claude-code-haha'])
+      expect(useSessionStore.getState().selectedProjects).toEqual(['Users-nanmi-workspace-myself_code-Ycode'])
     })
 
-    expect(screen.getAllByRole('button', { name: /NanmiCoder\/cc-haha/i })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: /NanmiCoder\/Ycode/i })).toHaveLength(2)
   })
 })

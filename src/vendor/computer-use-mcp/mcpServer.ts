@@ -47,6 +47,14 @@ const DEFAULT_LOCK_HELD_MESSAGE =
   "Another Claude session is currently using the computer. Wait for that " +
   "session to finish, or find a non-computer-use approach.";
 
+function normalizeAppKey(value: string): string {
+  const raw = String(value ?? "").trim();
+  return raw
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "") || raw.toLowerCase();
+}
+
 /**
  * Dedupe `granted` into `existing` on bundleId, spread truthy-only flags over
  * defaults+existing. Truthy-only: a subsequent `request_access` that doesn't
@@ -60,10 +68,10 @@ function mergePermissionResponse(
   existingFlags: CuGrantFlags,
   response: CuPermissionResponse,
 ): { apps: AppGrant[]; flags: CuGrantFlags } {
-  const seen = new Set(existing.map((a) => a.bundleId));
+  const seen = new Set(existing.map((a) => normalizeAppKey(a.bundleId)));
   const apps = [
     ...existing,
-    ...response.granted.filter((g) => !seen.has(g.bundleId)),
+    ...response.granted.filter((g) => !seen.has(normalizeAppKey(g.bundleId))),
   ];
   const truthyFlags = Object.fromEntries(
     Object.entries(response.flags).filter(([, v]) => v === true),

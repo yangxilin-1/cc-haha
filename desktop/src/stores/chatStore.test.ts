@@ -14,7 +14,7 @@ const {
   markCompletedAndDismissedMock,
   resetCompletedTasksMock,
   refreshTasksMock,
-  cliTaskStoreSnapshot,
+  desktopTaskStoreSnapshot,
 } = vi.hoisted(() => ({
   sendMock: vi.fn(),
   getMemberBySessionIdMock: vi.fn<(sessionId: string) => any>(() => null),
@@ -28,7 +28,7 @@ const {
   markCompletedAndDismissedMock: vi.fn(),
   resetCompletedTasksMock: vi.fn(async () => {}),
   refreshTasksMock: vi.fn(),
-  cliTaskStoreSnapshot: {
+  desktopTaskStoreSnapshot: {
     tasks: [] as Array<{ id: string; subject: string; status: string; activeForm?: string }>,
     sessionId: null as string | null,
   },
@@ -80,12 +80,12 @@ vi.mock('./sessionStore', () => ({
   },
 }))
 
-vi.mock('./cliTaskStore', () => ({
-  useCLITaskStore: {
+vi.mock('./desktopTaskStore', () => ({
+  useDesktopTaskStore: {
     getState: () => ({
       fetchSessionTasks: fetchSessionTasksMock,
-      tasks: cliTaskStoreSnapshot.tasks,
-      sessionId: cliTaskStoreSnapshot.sessionId,
+      tasks: desktopTaskStoreSnapshot.tasks,
+      sessionId: desktopTaskStoreSnapshot.sessionId,
       clearTasks: clearTasksMock,
       setTasksFromTodos: setTasksFromTodosMock,
       markCompletedAndDismissed: markCompletedAndDismissedMock,
@@ -112,8 +112,8 @@ describe('chatStore history mapping', () => {
     markCompletedAndDismissedMock.mockReset()
     resetCompletedTasksMock.mockReset()
     refreshTasksMock.mockReset()
-    cliTaskStoreSnapshot.tasks = []
-    cliTaskStoreSnapshot.sessionId = null
+    desktopTaskStoreSnapshot.tasks = []
+    desktopTaskStoreSnapshot.sessionId = null
     useChatStore.setState({
       ...initialState,
       sessions: {},
@@ -336,6 +336,18 @@ describe('chatStore history mapping', () => {
     })
   })
 
+  it('sends patch rollback requests over websocket', () => {
+    const reversePatch = '--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-line with trailing space \n+line\n'
+
+    useChatStore.getState().rollbackPatch('session-1', 'tool-1', reversePatch)
+
+    expect(sendMock).toHaveBeenCalledWith('session-1', {
+      type: 'rollback_patch',
+      originalToolUseId: 'tool-1',
+      reversePatch,
+    })
+  })
+
   it('stores terminal task notifications for agent tool cards', () => {
     useChatStore.setState({
       sessions: {
@@ -424,9 +436,95 @@ describe('chatStore history mapping', () => {
     expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.streamingText).toBe('')
   })
 
-  it('resets completed CLI tasks before continuing the next user turn', () => {
-    cliTaskStoreSnapshot.sessionId = TEST_SESSION_ID
-    cliTaskStoreSnapshot.tasks = [
+  it('preserves user input whitespace for pasted code messages', () => {
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: {
+          messages: [],
+          chatState: 'idle',
+          connectionState: 'connected',
+          streamingText: '',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    const pastedCode = '  function add(a, b) {\n    return a + b\n  }\n'
+    useChatStore.getState().sendMessage(TEST_SESSION_ID, pastedCode)
+
+    expect(sendMock).toHaveBeenCalledWith(TEST_SESSION_ID, {
+      type: 'user_message',
+      content: pastedCode,
+      attachments: undefined,
+    })
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.messages).toMatchObject([
+      {
+        type: 'user_text',
+        content: pastedCode,
+      },
+    ])
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.chatState).toBe('thinking')
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.statusVerb).toBe('')
+  })
+
+  it('flushes buffered streaming deltas before completing a message', () => {
+    vi.useFakeTimers()
+    useChatStore.setState({
+      sessions: {
+        [TEST_SESSION_ID]: {
+          messages: [],
+          chatState: 'streaming',
+          connectionState: 'connected',
+          streamingText: '我需要知道',
+          streamingToolInput: '',
+          activeToolUseId: null,
+          activeToolName: null,
+          activeThinkingId: null,
+          pendingPermission: null,
+          pendingComputerUsePermission: null,
+          tokenUsage: { input_tokens: 0, output_tokens: 0 },
+          elapsedSeconds: 0,
+          statusVerb: '',
+          slashCommands: [],
+          agentTaskNotifications: {},
+          elapsedTimer: null,
+        },
+      },
+    })
+
+    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+      type: 'content_delta',
+      text: '你想查询哪个城市的天气。请告诉我城市名。',
+    })
+    useChatStore.getState().handleServerMessage(TEST_SESSION_ID, {
+      type: 'message_complete',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.messages).toMatchObject([
+      {
+        type: 'assistant_text',
+        content: '我需要知道你想查询哪个城市的天气。请告诉我城市名。',
+      },
+    ])
+    expect(useChatStore.getState().sessions[TEST_SESSION_ID]?.streamingText).toBe('')
+    vi.useRealTimers()
+  })
+
+  it('resets completed desktop tasks before continuing the next user turn', () => {
+    desktopTaskStoreSnapshot.sessionId = TEST_SESSION_ID
+    desktopTaskStoreSnapshot.tasks = [
       { id: '1', subject: 'Existing completed task', status: 'completed' },
       { id: '2', subject: 'Another completed task', status: 'completed' },
     ]
@@ -646,7 +744,7 @@ describe('chatStore history mapping', () => {
     })
   })
 
-  it('refreshes CLI tasks when switching to an already-connected session', () => {
+  it('refreshes desktop tasks when switching to an already-connected session', () => {
     useChatStore.setState({
       sessions: {
         [TEST_SESSION_ID]: {

@@ -3,6 +3,7 @@ import { ApiError } from '../../api/client'
 import { filesystemApi } from '../../api/filesystem'
 import { useTranslation } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
+import { ComputerUseLineIcon, FileLineIcon, FolderLineIcon } from '../shared/LineIcons'
 
 type DirEntry = {
   name: string
@@ -14,13 +15,33 @@ export type FileSearchMenuHandle = {
   handleKeyDown: (e: KeyboardEvent) => void
 }
 
+export type FileSearchMenuAction = {
+  id: string
+  label: string
+  description: string
+  insertText: string
+  aliases?: string[]
+}
+
 type Props = {
   cwd: string
   filter?: string
-  onSelect: (path: string, relativePath: string) => void
+  enableFileSearch?: boolean
+  actions?: FileSearchMenuAction[]
+  onSelect: (
+    path: string,
+    relativePath: string,
+    item?: { type: 'action' | 'file' | 'directory'; id?: string },
+  ) => void
 }
 
-export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, filter = '', onSelect }, ref) => {
+export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({
+  cwd,
+  filter = '',
+  enableFileSearch = true,
+  actions = [],
+  onSelect,
+}, ref) => {
   const t = useTranslation()
   const [entries, setEntries] = useState<DirEntry[]>([])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
@@ -30,6 +51,7 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
   const [selectedIndex, setSelectedIndex] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
   const currentPathRef = useRef(cwd)
+  const canBrowseFiles = enableFileSearch && cwd.trim().length > 0
 
   const getErrorState = (error: unknown): { errorKey: TranslationKey | null; errorMessage: string | null } => {
     if (error instanceof ApiError) {
@@ -71,6 +93,15 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
 
   // Load directory entries
   const loadDir = useCallback(async (dirPath: string, searchQuery: string) => {
+    if (!canBrowseFiles) {
+      setEntries([])
+      setLoading(false)
+      setErrorMessage(null)
+      setErrorKey(null)
+      setSelectedIndex(0)
+      return
+    }
+
     setLoading(true)
     setErrorMessage(null)
     setErrorKey(null)
@@ -95,7 +126,7 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
       setErrorMessage(nextError.errorMessage)
     }
     setLoading(false)
-  }, [])
+  }, [canBrowseFiles])
 
   // Initial load: parse filter path and navigate accordingly
   useEffect(() => {
@@ -104,11 +135,27 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
     void loadDir(navigateTo, searchQuery)
   }, [cwd, filter, loadDir])
 
+  const visibleActions = actions.filter((action) => {
+    const query = filter.trim().toLowerCase()
+    if (!query) return true
+    return [
+      action.label,
+      action.description,
+      action.insertText,
+      ...(action.aliases ?? []),
+    ].join('\n').toLowerCase().includes(query)
+  })
+  const orderedEntries = [
+    ...entries.filter((entry) => entry.isDirectory),
+    ...entries.filter((entry) => !entry.isDirectory),
+  ]
+
   // Keyboard navigation handler exposed via ref
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    const selectableCount = visibleActions.length + orderedEntries.length
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelectedIndex((prev) => Math.min(prev + 1, entries.length - 1))
+      setSelectedIndex((prev) => Math.min(prev + 1, Math.max(selectableCount - 1, 0)))
       return
     }
     if (e.key === 'ArrowUp') {
@@ -118,20 +165,31 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
     }
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault()
-      if (entries[selectedIndex]) {
-        onSelect(entries[selectedIndex]!.path, entries[selectedIndex]!.name)
+      const action = visibleActions[selectedIndex]
+      if (action) {
+        onSelect('', action.insertText, { type: 'action', id: action.id })
+        return
+      }
+
+      const entry = orderedEntries[selectedIndex - visibleActions.length]
+      if (entry) {
+        onSelect(entry.path, entry.name, {
+          type: entry.isDirectory ? 'directory' : 'file',
+        })
       }
       return
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entries, selectedIndex])
+  }, [orderedEntries, selectedIndex, visibleActions])
 
   useImperativeHandle(ref, () => ({ handleKeyDown }), [handleKeyDown])
 
   // Scroll selected into view
   useEffect(() => {
     const el = listRef.current?.querySelector(`[data-index="${selectedIndex}"]`) as HTMLButtonElement | null
-    el?.scrollIntoView({ block: 'nearest' })
+    if (typeof el?.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest' })
+    }
   }, [selectedIndex])
 
   // Build breadcrumb segments from current path relative to cwd
@@ -143,6 +201,13 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
 
   const dirs = entries.filter((e) => e.isDirectory)
   const files = entries.filter((e) => !e.isDirectory)
+  const showFileHeader = canBrowseFiles
+  const showEmptyState =
+    !loading &&
+    !errorKey &&
+    !errorMessage &&
+    visibleActions.length === 0 &&
+    entries.length === 0
 
   return (
     <div
@@ -150,67 +215,91 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
       className="absolute left-0 bottom-full mb-2 z-50 w-full min-w-[480px] overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] shadow-[var(--shadow-dropdown)]"
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {/* Header with path */}
-      <div className="flex items-center gap-1.5 border-b border-[var(--color-border)] px-3 py-2 text-[11px]">
-        <span className="material-symbols-outlined text-[14px] text-[var(--color-text-tertiary)]">folder_open</span>
-        <span className="text-[var(--color-text-tertiary)] font-mono">{cwd.split('/').pop() || cwd}</span>
-        {breadcrumbs.map((seg, i) => (
-          <span key={i} className="flex items-center gap-1">
-            <span className="text-[var(--color-text-tertiary)]">/</span>
-            <span className="text-[var(--color-text-primary)] font-mono">{seg}</span>
-          </span>
-        ))}
-        {loading && (
-          <span className="material-symbols-outlined text-[12px] text-[var(--color-text-tertiary)] animate-spin ml-1">progress_activity</span>
-        )}
-      </div>
+      {showFileHeader && (
+        <div className="flex items-center gap-1.5 border-b border-[var(--color-border)] px-3 py-2 text-[11px]">
+          <FolderLineIcon size={14} className="text-[var(--color-text-tertiary)]" />
+          <span className="text-[var(--color-text-tertiary)] font-mono">{cwd.split('/').pop() || cwd}</span>
+          {breadcrumbs.map((seg, i) => (
+            <span key={i} className="flex items-center gap-1">
+              <span className="text-[var(--color-text-tertiary)]">/</span>
+              <span className="text-[var(--color-text-primary)] font-mono">{seg}</span>
+            </span>
+          ))}
+          {loading && (
+            <span className="material-symbols-outlined text-[12px] text-[var(--color-text-tertiary)] animate-spin ml-1">progress_activity</span>
+          )}
+        </div>
+      )}
 
       {/* File list */}
       <div ref={listRef} className="max-h-[300px] overflow-y-auto py-1">
+        {visibleActions.map((action, index) => (
+          <button
+            key={action.id}
+            data-index={index}
+            onClick={() => onSelect('', action.insertText, { type: 'action', id: action.id })}
+            onMouseEnter={() => setSelectedIndex(index)}
+            className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors ${
+              selectedIndex === index ? 'bg-[var(--color-surface-hover)]' : 'hover:bg-[var(--color-surface-hover)]'
+            }`}
+          >
+            <ComputerUseLineIcon size={16} className="shrink-0 text-[var(--color-brand)]" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-[var(--color-text-primary)]">{action.label}</span>
+              <span className="block truncate text-xs text-[var(--color-text-tertiary)]">{action.description}</span>
+            </span>
+          </button>
+        ))}
+
         {loading && entries.length === 0 ? (
           <div className="px-4 py-6 text-center text-xs text-[var(--color-text-tertiary)]">{t('fileSearch.searching')}</div>
         ) : (errorKey || errorMessage) ? (
           <div className="px-4 py-6 text-center text-xs text-[var(--color-error)]">
             {errorKey ? t(errorKey) : errorMessage}
           </div>
-        ) : entries.length === 0 ? (
+        ) : showEmptyState ? (
           <div className="px-4 py-6 text-center text-xs text-[var(--color-text-tertiary)]">
-            {filter ? t('fileSearch.noMatch') : t('fileSearch.noFiles')}
+            {!canBrowseFiles && enableFileSearch
+              ? t('fileSearch.noDirectory')
+              : filter ? t('fileSearch.noMatch') : t('fileSearch.noFiles')}
           </div>
         ) : (
           <>
             {/* Directories */}
-            {dirs.map((entry, i) => (
+            {dirs.map((entry, i) => {
+              const idx = visibleActions.length + i
+              return (
               <button
                 key={entry.path}
-                data-index={i}
+                data-index={idx}
                 onClick={() => {
                   void loadDir(entry.path, filter)
                 }}
-                onMouseEnter={() => setSelectedIndex(i)}
+                onMouseEnter={() => setSelectedIndex(idx)}
                 className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors ${
-                  selectedIndex === i ? 'bg-[var(--color-surface-hover)]' : 'hover:bg-[var(--color-surface-hover)]'
+                  selectedIndex === idx ? 'bg-[var(--color-surface-hover)]' : 'hover:bg-[var(--color-surface-hover)]'
                 }`}
               >
-                <span className="material-symbols-outlined text-[16px] text-[var(--color-brand)]">folder</span>
+                <FolderLineIcon size={16} className="text-[var(--color-brand)]" />
                 <span className="text-sm text-[var(--color-text-primary)] truncate">{entry.name}</span>
               </button>
-            ))}
+              )
+            })}
 
             {/* Files */}
             {files.map((entry, i) => {
-              const idx = dirs.length + i
+              const idx = visibleActions.length + dirs.length + i
               return (
                 <button
                   key={entry.path}
                   data-index={idx}
-                  onClick={() => onSelect(entry.path, entry.name)}
+                  onClick={() => onSelect(entry.path, entry.name, { type: 'file' })}
                   onMouseEnter={() => setSelectedIndex(idx)}
                   className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors ${
                     selectedIndex === idx ? 'bg-[var(--color-surface-hover)]' : 'hover:bg-[var(--color-surface-hover)]'
                   }`}
                 >
-                  <span className="material-symbols-outlined text-[16px] text-[var(--color-text-secondary)]">description</span>
+                  <FileLineIcon size={16} className="text-[var(--color-text-secondary)]" />
                   <span className="text-sm text-[var(--color-text-primary)] truncate">{entry.name}</span>
                 </button>
               )
@@ -224,7 +313,7 @@ export const FileSearchMenu = forwardRef<FileSearchMenuHandle, Props>(({ cwd, fi
         <kbd className="rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1 py-0.5 font-mono">↑↓</kbd>
         <span>{t('fileSearch.navigate')}</span>
         <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1 py-0.5 font-mono">Enter</kbd>
-        <span>{t('fileSearch.attach')}</span>
+        <span>{t('common.select')}</span>
         <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-1 py-0.5 font-mono">Esc</kbd>
         <span>{t('fileSearch.close')}</span>
       </div>

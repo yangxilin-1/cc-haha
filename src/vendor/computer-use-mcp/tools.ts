@@ -171,7 +171,7 @@ export function buildComputerUseTools(
             type: "array",
             items: { type: "string" },
             description:
-              "Application display names (e.g. \"Slack\", \"Calendar\") or bundle identifiers (e.g. \"com.tinyspeck.slackmacgap\"). Display names are resolved case-insensitively against installed apps." +
+              "Application display names (e.g. \"Slack\", \"Calendar\") or bundle identifiers (e.g. \"com.tinyspeck.slackmacgap\"). Preserve the user's requested app name exactly; do not substitute a similar-looking app such as Code for Qoder or Coder unless the user explicitly asked for that app. Display names are resolved case-insensitively against installed apps." +
               installedAppsHint,
           },
           reason: {
@@ -211,6 +211,26 @@ export function buildComputerUseTools(
             type: "boolean",
             description:
               "Save the image to disk so it can be attached to a message for the user. Returns the saved path in the tool result. Only set this when you intend to share the image — screenshots you're just looking at don't need saving.",
+          },
+        },
+        required: [],
+      },
+    },
+
+    {
+      name: "observe_desktop",
+      description:
+        "Observe the desktop with both a screenshot and a structured UI element tree. Prefer this over screenshot when you need to click buttons, type into fields, inspect window titles, or recover from a changed layout. " +
+        "The UI element list is limited to granted applications and safe host permission dialogs; use the returned element_id values with click_ui_element or type_into_ui_element.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          max_elements: {
+            type: "integer",
+            minimum: 1,
+            maximum: 300,
+            description:
+              "Maximum number of UI elements to return. Default is 120.",
           },
         },
         required: [],
@@ -411,6 +431,74 @@ export function buildComputerUseTools(
           },
         },
         required: ["app"],
+      },
+    },
+
+    {
+      name: "run_desktop_intent",
+      description:
+        "Run a high-level desktop intent in one fast local workflow when available. You MUST use this before open_application, screenshots, or low-level click/type loops for direct requests like opening an app and performing a common action. Currently supports music playback intents such as playing a song in QQ Music on Windows. For playback tasks, do not claim success unless this returns completed:true or you separately verify playback; if it returns handled:false or completed:false, continue with observe_desktop/low-level fallback.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          instruction: {
+            type: "string",
+            description:
+              "The user's natural-language instruction, e.g. \"打开 QQ 音乐播放晴天\".",
+          },
+          intent: {
+            type: "string",
+            description:
+              "Optional intent name when known. Use \"play_music\" for music playback.",
+          },
+          app: {
+            type: "string",
+            description:
+              "Optional granted app display name or bundle identifier, e.g. \"QQ音乐\".",
+          },
+          query: {
+            type: "string",
+            description:
+              "Optional target/query for the intent, e.g. song name \"晴天\".",
+          },
+        },
+        required: ["instruction"],
+      },
+    },
+
+    {
+      name: "click_ui_element",
+      description:
+        "Click a structured UI element returned by observe_desktop. Prefer this over coordinate clicks when an element_id is available; it can use platform accessibility/UI Automation APIs and falls back to the element center when needed. The target app must be granted at tier \"click\" or \"full\".",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          element_id: {
+            type: "string",
+            description: "The element_id returned by observe_desktop.",
+          },
+        },
+        required: ["element_id"],
+      },
+    },
+
+    {
+      name: "type_into_ui_element",
+      description:
+        "Focus a structured UI element returned by observe_desktop and type text into it. Prefer this over coordinate click + type for text fields. The target app must be granted at tier \"full\".",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          element_id: {
+            type: "string",
+            description: "The element_id returned by observe_desktop.",
+          },
+          text: {
+            type: "string",
+            description: "Text to enter into the UI element.",
+          },
+        },
+        required: ["element_id", "text"],
       },
     },
 

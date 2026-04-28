@@ -1,5 +1,6 @@
 import { useUIStore } from '../../stores/uiStore'
 import { useTranslation } from '../../i18n'
+import { ModeSelector } from '../../modes/ModeSelector'
 
 export function TitleBar() {
   const { activeView, setActiveView } = useUIStore()
@@ -15,7 +16,7 @@ export function TitleBar() {
 
       {/* Logo */}
       <div className="flex items-center gap-2 mr-4" data-tauri-drag-region>
-        <span className="text-xs font-bold tracking-wider text-[var(--color-brand)] uppercase">Claude Code Companion</span>
+        <span className="text-xs font-bold tracking-wider text-[var(--color-brand)] uppercase">Ycode Desktop</span>
       </div>
 
       {/* Navigation arrows */}
@@ -57,8 +58,9 @@ export function TitleBar() {
         </TabButton>
       </div>
 
-      {/* Right: Settings */}
+      {/* Right: Mode switch + Settings */}
       <div className="flex items-center gap-2 mr-4">
+        <ModeSelector />
         <button className="p-1.5 rounded-[var(--radius-md)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)] transition-colors">
           <span className="material-symbols-outlined text-[18px]">settings</span>
         </button>

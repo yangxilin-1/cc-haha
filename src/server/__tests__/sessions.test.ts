@@ -7,7 +7,6 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { SessionService } from '../services/sessionService.js'
-import { clearCommandsCache } from '../../commands.js'
 import { sanitizePath } from '../../utils/sessionStoragePortable.js'
 
 // ============================================================================
@@ -16,12 +15,14 @@ import { sanitizePath } from '../../utils/sessionStoragePortable.js'
 
 let tmpDir: string
 let service: SessionService
+let originalYcodeDataDir: string | undefined
 
 /** Create a temporary config dir and configure the service to use it. */
 async function setupTmpConfigDir(): Promise<string> {
-  tmpDir = path.join(os.tmpdir(), `claude-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  tmpDir = path.join(os.tmpdir(), `ycode-session-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   await fs.mkdir(path.join(tmpDir, 'projects'), { recursive: true })
-  process.env.CLAUDE_CONFIG_DIR = tmpDir
+  originalYcodeDataDir = process.env.YCODE_DATA_DIR
+  process.env.YCODE_DATA_DIR = tmpDir
   return tmpDir
 }
 
@@ -29,7 +30,8 @@ async function cleanupTmpDir(): Promise<void> {
   if (tmpDir) {
     await fs.rm(tmpDir, { recursive: true, force: true })
   }
-  delete process.env.CLAUDE_CONFIG_DIR
+  if (originalYcodeDataDir === undefined) delete process.env.YCODE_DATA_DIR
+  else process.env.YCODE_DATA_DIR = originalYcodeDataDir
 }
 
 /** Write a JSONL session file with given entries. */
@@ -44,20 +46,6 @@ async function writeSessionFile(
   const content = entries.map((e) => JSON.stringify(e)).join('\n') + '\n'
   await fs.writeFile(filePath, content, 'utf-8')
   return filePath
-}
-
-async function writeSkill(
-  rootDir: string,
-  skillName: string,
-  description: string,
-): Promise<void> {
-  const skillDir = path.join(rootDir, skillName)
-  await fs.mkdir(skillDir, { recursive: true })
-  await fs.writeFile(
-    path.join(skillDir, 'SKILL.md'),
-    ['---', `description: ${description}`, '---', '', `# ${skillName}`].join('\n'),
-    'utf-8',
-  )
 }
 
 // Sample entries matching real CLI format
@@ -137,7 +125,6 @@ describe('SessionService', () => {
   })
 
   afterEach(async () => {
-    clearCommandsCache()
     await cleanupTmpDir()
   })
 
@@ -379,6 +366,13 @@ describe('SessionService', () => {
     expect(workDir).toBe('/tmp/from-cwd')
   })
 
+  it('should not treat chat placeholder project dir as a real workDir', async () => {
+    const { sessionId } = await service.createSession(undefined, 'chat')
+
+    const workDir = await service.getSessionWorkDir(sessionId)
+    expect(workDir).toBeNull()
+  })
+
   // --------------------------------------------------------------------------
   // createSession
   // --------------------------------------------------------------------------
@@ -430,7 +424,7 @@ describe('SessionService', () => {
   })
 
   it('should throw when workDir does not exist', async () => {
-    expect(service.createSession('/tmp/definitely-missing-claude-code-haha')).rejects.toThrow(
+    expect(service.createSession('/tmp/definitely-missing-ycode')).rejects.toThrow(
       'Working directory does not exist'
     )
   })
@@ -528,7 +522,20 @@ describe('SessionService', () => {
 
     const launchInfo = await service.getSessionLaunchInfo(sessionId)
     expect(launchInfo).not.toBeNull()
+    expect(launchInfo!.mode).toBe('code')
     expect(launchInfo!.workDir).toBe(os.tmpdir())
+    expect(launchInfo!.transcriptMessageCount).toBe(0)
+    expect(launchInfo!.customTitle).toBeNull()
+  })
+
+  it('should keep chat launch info detached from the __chat__ placeholder path', async () => {
+    const { sessionId } = await service.createSession(undefined, 'chat')
+
+    const launchInfo = await service.getSessionLaunchInfo(sessionId)
+    expect(launchInfo).not.toBeNull()
+    expect(launchInfo!.projectDir).toBe('__chat__')
+    expect(launchInfo!.mode).toBe('chat')
+    expect(launchInfo!.workDir).toBeNull()
     expect(launchInfo!.transcriptMessageCount).toBe(0)
     expect(launchInfo!.customTitle).toBeNull()
   })
@@ -546,6 +553,7 @@ describe('SessionService', () => {
 
     const launchInfo = await service.getSessionLaunchInfo(sessionId)
     expect(launchInfo).not.toBeNull()
+    expect(launchInfo!.mode).toBe('code')
     expect(launchInfo!.workDir).toBe('/tmp/project')
     expect(launchInfo!.transcriptMessageCount).toBe(2)
     expect(launchInfo!.customTitle).toBe('Saved chat')
@@ -708,21 +716,14 @@ describe('Sessions API', () => {
     expect(detail.title).toBe('New Custom Title')
   })
 
-  it('GET /api/sessions/:id/slash-commands should include user and project skills before CLI init', async () => {
+  it('GET /api/sessions/:id/slash-commands should return native desktop commands', async () => {
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     const workDir = path.join(tmpDir, 'workspace', 'app')
-
-    await fs.mkdir(path.join(workDir, '.claude', 'skills'), { recursive: true })
-    await fs.mkdir(path.join(tmpDir, 'skills'), { recursive: true })
-    await writeSkill(path.join(tmpDir, 'skills'), 'user-skill', 'User skill description')
-    await writeSkill(path.join(workDir, '.claude', 'skills'), 'project-skill', 'Project skill description')
 
     await writeSessionFile('-tmp-api-test', sessionId, [
       makeSnapshotEntry(),
       makeSessionMetaEntry(workDir),
     ])
-
-    clearCommandsCache()
 
     const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/slash-commands`)
     expect(res.status).toBe(200)
@@ -732,10 +733,13 @@ describe('Sessions API', () => {
     }
 
     expect(body.commands).toContainEqual(
-      expect.objectContaining({ name: 'user-skill', description: 'User skill description' }),
+      expect.objectContaining({ name: 'review' }),
     )
     expect(body.commands).toContainEqual(
-      expect.objectContaining({ name: 'project-skill', description: 'Project skill description' }),
+      expect.objectContaining({ name: 'fix' }),
+    )
+    expect(body.commands).not.toContainEqual(
+      expect.objectContaining({ name: 'user-skill' }),
     )
   })
 

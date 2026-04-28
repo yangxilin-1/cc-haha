@@ -1,20 +1,24 @@
-import type { InputHTMLAttributes } from 'react'
+import type { InputHTMLAttributes, ReactNode } from 'react'
 
 type InputProps = InputHTMLAttributes<HTMLInputElement> & {
   label?: string
+  labelAccessory?: ReactNode
   error?: string
   required?: boolean
 }
 
-export function Input({ label, error, required, className = '', id, ...props }: InputProps) {
+export function Input({ label, labelAccessory, error, required, className = '', id, ...props }: InputProps) {
   const inputId = id || label?.toLowerCase().replace(/\s+/g, '-')
   return (
     <div className="flex flex-col gap-1">
       {label && (
-        <label htmlFor={inputId} className="text-sm font-medium text-[var(--color-text-primary)]">
-          {label}
-          {required && <span className="text-[var(--color-error)] ml-0.5">*</span>}
-        </label>
+        <div className="flex items-center justify-between gap-2">
+          <label htmlFor={inputId} className="text-sm font-medium text-[var(--color-text-primary)]">
+            {label}
+            {required && <span className="text-[var(--color-error)] ml-0.5">*</span>}
+          </label>
+          {labelAccessory}
+        </div>
       )}
       <input
         id={inputId}

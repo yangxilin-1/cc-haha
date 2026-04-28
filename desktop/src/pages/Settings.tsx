@@ -6,10 +6,11 @@ import { Modal } from '../components/shared/Modal'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import type { PermissionMode, EffortLevel, ThemeMode } from '../types/settings'
-import type { Locale } from '../i18n'
+import type { Locale, TranslationKey } from '../i18n'
+import { providersApi } from '../api/providers'
 import { PROVIDER_PRESETS } from '../config/providerPresets'
 import type { ProviderPreset } from '../config/providerPresets'
-import type { SavedProvider, UpdateProviderInput, ProviderTestResult, ModelMapping, ApiFormat } from '../types/provider'
+import type { SavedProvider, UpdateProviderInput, ProviderTestResult, ModelMapping, ApiFormat, LocalLlamaConfig } from '../types/provider'
 import { AdapterSettings } from './AdapterSettings'
 import { useAgentStore } from '../stores/agentStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -21,7 +22,7 @@ import { SkillDetail } from '../components/skills/SkillDetail'
 import { ComputerUseSettings } from './ComputerUseSettings'
 import { useUIStore, type SettingsTab } from '../stores/uiStore'
 import { ClaudeOfficialLogin } from '../components/settings/ClaudeOfficialLogin'
-import { useUpdateStore } from '../stores/updateStore'
+import { FolderLineIcon } from '../components/shared/LineIcons'
 
 export function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('providers')
@@ -48,9 +49,6 @@ export function Settings() {
             <TabButton icon="auto_awesome" label={t('settings.tab.skills')} active={activeTab === 'skills'} onClick={() => setActiveTab('skills')} />
             <TabButton icon="mouse" label={t('settings.tab.computerUse')} active={activeTab === 'computerUse'} onClick={() => setActiveTab('computerUse')} />
           </div>
-          <div className="border-t border-[var(--color-border)]/40 pt-1">
-            <TabButton icon="info" label={t('settings.tab.about')} active={activeTab === 'about'} onClick={() => setActiveTab('about')} />
-          </div>
         </div>
 
         {/* Tab content */}
@@ -62,7 +60,6 @@ export function Settings() {
           {activeTab === 'agents' && <AgentsSettings />}
           {activeTab === 'skills' && <SkillSettings />}
           {activeTab === 'computerUse' && <ComputerUseSettings />}
-          {activeTab === 'about' && <AboutSettings />}
         </div>
       </div>
     </div>
@@ -88,14 +85,22 @@ function TabButton({ icon, label, active, onClick }: { icon: string; label: stri
 // ─── Provider Settings ──────────────────────────────────────
 
 function ProviderSettings() {
-  const { providers, activeId, isLoading, fetchProviders, deleteProvider, activateProvider, activateOfficial, testProvider } = useProviderStore()
+  const { providers, activeId, isLoading, fetchProviders, createProvider, updateProvider, deleteProvider, activateProvider, activateOfficial, testProvider, testConfig } = useProviderStore()
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const t = useTranslation()
   const [editingProvider, setEditingProvider] = useState<SavedProvider | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [testResults, setTestResults] = useState<Record<string, { loading: boolean; result?: ProviderTestResult }>>({})
+  const [localActionLoading, setLocalActionLoading] = useState(false)
+  const [localTest, setLocalTest] = useState<{ loading: boolean; result?: ProviderTestResult }>({ loading: false })
+  const [localConfig, setLocalConfig] = useState<LocalLlamaConfig | null>(null)
 
   useEffect(() => { fetchProviders() }, [fetchProviders])
+  useEffect(() => {
+    providersApi.localLlamaConfig()
+      .then(({ config }) => setLocalConfig(config))
+      .catch(console.error)
+  }, [])
 
   const handleDelete = async (provider: SavedProvider) => {
     if (activeId === provider.id) return
@@ -121,6 +126,82 @@ function ProviderSettings() {
   const handleActivateOfficial = async () => {
     await activateOfficial()
     await fetchSettings()
+  }
+
+  const localPreset = PROVIDER_PRESETS.find((p) => p.id === 'local-llama')
+  const localProvider = providers.find((provider) => provider.presetId === 'local-llama')
+  const isLocalActive = localProvider ? activeId === localProvider.id : false
+  const visibleProviders = providers.filter((provider) => provider.presetId !== 'local-llama')
+  const localModelAlias = localConfig?.modelAlias || localPreset?.defaultModels.main || ''
+  const localBaseUrl = localConfig?.baseUrl || localPreset?.baseUrl || ''
+  const localApiFormat = (localConfig?.apiFormat || localPreset?.apiFormat || 'openai_chat') as ApiFormat
+  const handleActivateLocal = async () => {
+    if (!localPreset || !localModelAlias || !localBaseUrl) return
+    setLocalActionLoading(true)
+    try {
+      let nextBaseUrl = localBaseUrl
+      let nextModelAlias = localModelAlias
+      let nextApiFormat = localApiFormat
+      try {
+        const { config } = await providersApi.startLocalLlama()
+        setLocalConfig(config)
+        nextBaseUrl = config.baseUrl
+        nextModelAlias = config.modelAlias
+        nextApiFormat = config.apiFormat
+      } catch (err) {
+        console.warn('Failed to start local llama.cpp:', err)
+      }
+      const nextModels = {
+        main: nextModelAlias,
+        haiku: nextModelAlias,
+        sonnet: nextModelAlias,
+        opus: nextModelAlias,
+      }
+
+      let provider = localProvider
+      if (!provider) {
+        provider = await createProvider({
+          presetId: localPreset.id,
+          name: localPreset.name,
+          apiKey: 'local',
+          baseUrl: nextBaseUrl,
+          apiFormat: nextApiFormat,
+          models: nextModels,
+          notes: 'Local llama.cpp OpenAI-compatible service',
+        })
+      } else {
+        provider = await updateProvider(provider.id, {
+          name: localPreset.name,
+          apiKey: 'local',
+          baseUrl: nextBaseUrl,
+          apiFormat: nextApiFormat,
+          models: nextModels,
+          notes: provider.notes,
+        })
+      }
+      await activateProvider(provider.id)
+      await fetchSettings()
+    } finally {
+      setLocalActionLoading(false)
+    }
+  }
+
+  const handleTestLocal = async () => {
+    if (!localPreset || !localModelAlias || !localBaseUrl) return
+    setLocalTest({ loading: true })
+    try {
+      const result = localProvider
+        ? await testProvider(localProvider.id)
+        : await testConfig({
+            baseUrl: localBaseUrl,
+            apiKey: 'local',
+            modelId: localModelAlias,
+            apiFormat: localApiFormat,
+          })
+      setLocalTest({ loading: false, result })
+    } catch {
+      setLocalTest({ loading: false, result: { connectivity: { success: false, latencyMs: 0, error: t('settings.providers.requestFailed') } } })
+    }
   }
 
   const isOfficialActive = activeId === null
@@ -169,17 +250,46 @@ function ProviderSettings() {
         )}
       </div>
 
+      {localPreset && (
+        <div
+          className={`relative flex flex-col rounded-xl border transition-all mb-2 ${
+            isLocalActive
+              ? 'border-[var(--color-brand)] bg-[var(--color-surface-container)] shadow-[var(--shadow-focus-ring)]'
+              : 'border-[var(--color-border)] hover:border-[var(--color-border-focus)]'
+          }`}
+        >
+          <div className="flex items-start gap-4 px-4 py-3.5">
+            <span className={`mt-1 w-2.5 h-2.5 rounded-full flex-shrink-0 ${isLocalActive ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-tertiary)]'}`} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.providers.localName')}</span>
+                {isLocalActive && (
+                  <span className="px-1.5 py-0.5 text-[10px] font-bold rounded border border-[var(--color-brand)]/18 bg-[var(--color-brand)]/14 text-[var(--color-brand)] leading-none">{t('common.active')}</span>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-shrink-0 items-center gap-1">
+              <Button variant={isLocalActive ? 'secondary' : 'primary'} size="sm" onClick={handleActivateLocal} loading={localActionLoading}>
+                {isLocalActive ? t('settings.providers.localConnected') : t('settings.providers.connectLocal')}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleTestLocal} loading={localTest.loading}>{t('settings.providers.test')}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Saved providers */}
-      {isLoading && providers.length === 0 ? (
+      {isLoading && visibleProviders.length === 0 ? (
         <div className="flex justify-center py-8">
           <div className="animate-spin w-5 h-5 border-2 border-[var(--color-brand)] border-t-transparent rounded-full" />
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {providers.map((provider) => {
+          {visibleProviders.map((provider) => {
             const isActive = activeId === provider.id
             const test = testResults[provider.id]
             const preset = PROVIDER_PRESETS.find((p) => p.id === provider.presetId)
+            const displayName = preset && preset.id !== 'custom' ? preset.name : provider.name
             return (
               <div
                 key={provider.id}
@@ -192,10 +302,7 @@ function ProviderSettings() {
                 <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isActive ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-tertiary)]'}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-[var(--color-text-primary)] truncate">{provider.name}</span>
-                    {preset && preset.id !== 'custom' && (
-                      <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-[var(--color-surface-container-high)] text-[var(--color-text-tertiary)] leading-none">{preset.name}</span>
-                    )}
+                    <span className="text-sm font-semibold text-[var(--color-text-primary)] truncate">{displayName}</span>
                     {provider.apiFormat && provider.apiFormat !== 'anthropic' && (
                       <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-[var(--color-surface-container-high)] text-[var(--color-warning)] leading-none">
                         {provider.apiFormat === 'openai_chat' ? 'OpenAI Chat' : 'OpenAI Responses'}
@@ -270,18 +377,66 @@ function requirePreset(preset: ProviderPreset | undefined): ProviderPreset {
   return preset
 }
 
+function getPresetIcon(presetId: string): string {
+  switch (presetId) {
+    case 'openai':
+      return 'auto_awesome'
+    case 'local-llama':
+      return 'memory'
+    case 'deepseek':
+      return 'travel_explore'
+    case 'zhipuglm':
+      return 'psychology'
+    case 'kimi':
+      return 'dark_mode'
+    case 'minimax':
+      return 'bolt'
+    default:
+      return 'tune'
+  }
+}
+
+function getPresetDescriptionKey(presetId: string): TranslationKey {
+  switch (presetId) {
+    case 'openai':
+      return 'settings.providers.presetDesc.openai'
+    case 'local-llama':
+      return 'settings.providers.presetDesc.local-llama'
+    case 'deepseek':
+      return 'settings.providers.presetDesc.deepseek'
+    case 'zhipuglm':
+      return 'settings.providers.presetDesc.zhipuglm'
+    case 'kimi':
+      return 'settings.providers.presetDesc.kimi'
+    case 'minimax':
+      return 'settings.providers.presetDesc.minimax'
+    default:
+      return 'settings.providers.presetDesc.custom'
+  }
+}
+
+async function openExternalUrl(url: string): Promise<void> {
+  try {
+    const { open } = await import(/* @vite-ignore */ '@tauri-apps/plugin-shell')
+    await open(url)
+  } catch {
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
+}
+
 function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps) {
   const { createProvider, updateProvider, testConfig } = useProviderStore()
   const fetchSettings = useSettingsStore((s) => s.fetchAll)
   const t = useTranslation()
 
-  const availablePresets = PROVIDER_PRESETS.filter((p) => p.id !== 'official')
+  const configurablePresets = PROVIDER_PRESETS.filter((p) => p.id !== 'official')
+  const availablePresets = configurablePresets.filter((p) => p.id !== 'local-llama')
   const fallbackPreset = requirePreset(
     availablePresets[availablePresets.length - 1] ?? PROVIDER_PRESETS[0],
   )
   const initialPreset = requirePreset(
     provider
-      ? availablePresets.find((p) => p.id === provider.presetId) ?? fallbackPreset
+      ? configurablePresets.find((p) => p.id === provider.presetId) ?? fallbackPreset
       : availablePresets[0] ?? fallbackPreset,
   )
 
@@ -297,15 +452,26 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
   const [isTesting, setIsTesting] = useState(false)
   const [settingsJson, setSettingsJson] = useState('')
   const [settingsJsonError, setSettingsJsonError] = useState<string | null>(null)
+  const [settingsJsonTouched, setSettingsJsonTouched] = useState(false)
+  const [showSettingsJson, setShowSettingsJson] = useState(false)
   const jsonPastedRef = useRef(false)
+  const normalizedModels = useMemo<ModelMapping>(() => {
+    const main = models.main.trim()
+    return {
+      main,
+      haiku: models.haiku.trim() || main,
+      sonnet: models.sonnet.trim() || main,
+      opus: models.opus.trim() || main,
+    }
+  }, [models])
 
-  // Load current settings.json and merge provider env vars
+  // Keep the advanced JSON preview aligned with the form until the user edits JSON directly.
   useEffect(() => {
-    // Skip if JSON was just populated by user paste
     if (jsonPastedRef.current) {
       jsonPastedRef.current = false
       return
     }
+    if (settingsJsonTouched) return
     import('../api/settings').then(({ settingsApi }) => {
       settingsApi.getUser().then((settings) => {
         const needsProxy = apiFormat !== 'anthropic'
@@ -316,10 +482,10 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
             ...((settings.env as Record<string, string>) || {}),
             ANTHROPIC_BASE_URL: needsProxy ? 'http://127.0.0.1:3456/proxy' : baseUrl,
             ANTHROPIC_AUTH_TOKEN: needsProxy ? 'proxy-managed' : (apiKey || '(your API key)'),
-            ANTHROPIC_MODEL: models.main,
-            ANTHROPIC_DEFAULT_HAIKU_MODEL: models.haiku,
-            ANTHROPIC_DEFAULT_SONNET_MODEL: models.sonnet,
-            ANTHROPIC_DEFAULT_OPUS_MODEL: models.opus,
+            ANTHROPIC_MODEL: normalizedModels.main,
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: normalizedModels.haiku,
+            ANTHROPIC_DEFAULT_SONNET_MODEL: normalizedModels.sonnet,
+            ANTHROPIC_DEFAULT_OPUS_MODEL: normalizedModels.opus,
           },
         }
         setSettingsJson(JSON.stringify(merged, null, 2))
@@ -327,8 +493,7 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
         setSettingsJson(JSON.stringify({}, null, 2))
       })
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPreset.id])
+  }, [apiFormat, apiKey, baseUrl, normalizedModels, selectedPreset.id, settingsJsonTouched])
 
   const handlePresetChange = (preset: ProviderPreset) => {
     setSelectedPreset(preset)
@@ -337,17 +502,27 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
     setApiFormat(preset.apiFormat ?? 'anthropic')
     setModels({ ...preset.defaultModels })
     setTestResult(null)
+    setSettingsJsonTouched(false)
+    setShowSettingsJson(false)
   }
 
   const isCustom = selectedPreset.id === 'custom'
-  const canSubmit = name.trim() && baseUrl.trim() && (mode === 'edit' || apiKey.trim()) && models.main.trim() && !settingsJsonError
+  const providerName = isCustom ? name.trim() : selectedPreset.name
+  const canSubmit = providerName && baseUrl.trim() && (mode === 'edit' || apiKey.trim()) && normalizedModels.main && (!showSettingsJson || !settingsJsonError)
+
+  const handleUseDefaultModelForAll = () => {
+    setModels((prev) => {
+      const main = prev.main.trim()
+      if (!main) return prev
+      return { ...prev, haiku: main, sonnet: main, opus: main }
+    })
+  }
 
   const handleSubmit = async () => {
     if (!canSubmit) return
     setIsSubmitting(true)
     try {
-      // Write the edited settings.json first (for all presets including official)
-      if (settingsJson.trim()) {
+      if (isCustom && showSettingsJson && settingsJson.trim()) {
         try {
           const parsed = JSON.parse(settingsJson)
           const { settingsApi } = await import('../api/settings')
@@ -360,19 +535,19 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
       if (mode === 'create') {
         await createProvider({
           presetId: selectedPreset.id,
-          name: name.trim(),
+          name: providerName,
           apiKey: apiKey.trim(),
           baseUrl: baseUrl.trim(),
           apiFormat,
-          models,
+          models: normalizedModels,
           notes: notes.trim() || undefined,
         })
       } else if (provider) {
         const input: UpdateProviderInput = {
-          name: name.trim(),
+          name: providerName,
           baseUrl: baseUrl.trim(),
           apiFormat,
-          models,
+          models: normalizedModels,
           notes: notes.trim() || undefined,
         }
         if (apiKey.trim()) input.apiKey = apiKey.trim()
@@ -388,7 +563,7 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
   }
 
   const handleTest = async () => {
-    if (!baseUrl.trim() || !models.main.trim()) return
+    if (!baseUrl.trim() || !normalizedModels.main) return
     setIsTesting(true)
     setTestResult(null)
     try {
@@ -396,12 +571,12 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
       if (mode === 'edit' && provider && !apiKey.trim()) {
         result = await useProviderStore.getState().testProvider(provider.id, {
           baseUrl: baseUrl.trim(),
-          modelId: models.main.trim(),
+          modelId: normalizedModels.main,
           apiFormat,
         })
       } else {
         if (!apiKey.trim()) return
-        result = await testConfig({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), modelId: models.main.trim(), apiFormat })
+        result = await testConfig({ baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), modelId: normalizedModels.main, apiFormat })
       }
       setTestResult(result)
     } catch {
@@ -427,72 +602,175 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
       }
     >
       <div className="flex flex-col gap-4">
-        {/* Preset chips */}
+        {/* Preset cards */}
         {mode === 'create' && (
           <div>
-            <label className="text-sm font-medium text-[var(--color-text-primary)] mb-2 block">{t('settings.providers.preset')}</label>
-            <div className="flex flex-wrap gap-2">
+            <label className="text-sm font-medium text-[var(--color-text-primary)] mb-2 block">{t('settings.providers.providerType')}</label>
+            <div className="grid grid-cols-2 gap-2">
               {availablePresets.map((preset) => (
                 <button
                   key={preset.id}
+                  type="button"
                   onClick={() => handlePresetChange(preset)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-all ${
+                  className={`group min-h-[92px] rounded-lg border px-3 py-3 text-left transition-all ${
                     selectedPreset.id === preset.id
-                      ? 'border-[var(--color-brand)] bg-[var(--color-surface-container-high)] text-[var(--color-brand)] shadow-[var(--shadow-focus-ring)]'
-                      : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-focus)] hover:bg-[var(--color-surface-hover)]'
+                      ? 'border-[var(--color-brand)] bg-[var(--color-surface-container-high)] shadow-[var(--shadow-focus-ring)]'
+                      : 'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-border-focus)] hover:bg-[var(--color-surface-hover)]'
                   }`}
                 >
-                  {preset.name}
+                  <div className="flex items-start gap-3">
+                    <span className={`mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg ${
+                      selectedPreset.id === preset.id
+                        ? 'bg-[var(--color-brand)] text-[var(--color-btn-primary-fg)]'
+                        : 'bg-[var(--color-surface-container-low)] text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)]'
+                    }`}>
+                      <span className="material-symbols-outlined text-[18px]">{getPresetIcon(preset.id)}</span>
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-sm font-semibold text-[var(--color-text-primary)]">{preset.name}</span>
+                        {preset.id === 'openai' && (
+                          <span className="rounded-full bg-[var(--color-brand)]/12 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-brand)]">
+                            {t('settings.providers.recommended')}
+                          </span>
+                        )}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-[var(--color-text-tertiary)]">
+                        {t(getPresetDescriptionKey(preset.id))}
+                      </span>
+                    </span>
+                    {selectedPreset.id === preset.id && (
+                      <span className="material-symbols-outlined text-[18px] text-[var(--color-brand)]">check_circle</span>
+                    )}
+                  </div>
                 </button>
               ))}
             </div>
           </div>
         )}
 
-        <Input label={t('settings.providers.name')} required value={name} onChange={(e) => setName(e.target.value)} placeholder={t('settings.providers.namePlaceholder')} />
+        {isCustom && (
+          <Input label={t('settings.providers.name')} required value={name} onChange={(e) => setName(e.target.value)} placeholder={t('settings.providers.namePlaceholder')} />
+        )}
 
-        <Input label={t('settings.providers.notes')} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t('settings.providers.notesPlaceholder')} />
+        {isCustom && (
+          <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+            <div className="mb-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)]">
+                <span className="material-symbols-outlined text-[17px]">tune</span>
+                {t('settings.providers.advancedSettings')}
+              </div>
+              <p className="mt-0.5 text-xs text-[var(--color-text-tertiary)]">{t('settings.providers.advancedSettingsDesc')}</p>
+            </div>
 
-        {/* Base URL */}
-        {isCustom || mode === 'edit' ? (
-          <Input label={t('settings.providers.baseUrl')} required value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={t('settings.providers.baseUrlPlaceholder')} />
-        ) : (
-          <div>
-            <label className="text-sm font-medium text-[var(--color-text-primary)] mb-1 block">{t('settings.providers.baseUrl')}</label>
-            <div className="text-xs text-[var(--color-text-tertiary)] px-3 py-2 rounded-[var(--radius-md)] bg-[var(--color-surface-container-low)] border border-[var(--color-border)]">
-              {baseUrl}
+            <div className="grid grid-cols-2 gap-3">
+              <Input label={t('settings.providers.baseUrl')} required value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={t('settings.providers.baseUrlPlaceholder')} />
+              <div>
+                <label className="text-sm font-medium text-[var(--color-text-primary)] mb-1 block">{t('settings.providers.apiFormat')}</label>
+                <select
+                  value={apiFormat}
+                  onChange={(e) => setApiFormat(e.target.value as ApiFormat)}
+                  className="h-10 w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 text-sm text-[var(--color-text-primary)] outline-none transition-colors duration-150 focus:border-[var(--color-border-focus)] focus:shadow-[var(--shadow-focus-ring)]"
+                >
+                  <option value="anthropic">{t('settings.providers.apiFormatAnthropic')}</option>
+                  <option value="openai_chat">{t('settings.providers.apiFormatOpenaiChat')}</option>
+                  <option value="openai_responses">{t('settings.providers.apiFormatOpenaiResponses')}</option>
+                </select>
+                {apiFormat !== 'anthropic' && (
+                  <p className="text-[11px] text-[var(--color-text-tertiary)] mt-1">{t('settings.providers.proxyHint')}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-3">
+              <Input label={t('settings.providers.notes')} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={t('settings.providers.notesPlaceholder')} />
+            </div>
+
+            <div className="mt-4 border-t border-[var(--color-border)] pt-3">
+              <button
+                type="button"
+                onClick={() => setShowSettingsJson((value) => !value)}
+                className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+              >
+                <span className="flex items-center gap-2 text-sm font-medium text-[var(--color-text-primary)]">
+                  <span className="material-symbols-outlined text-[16px]">data_object</span>
+                  {t('settings.providers.settingsJson')}
+                </span>
+                <span className="material-symbols-outlined text-[18px] text-[var(--color-text-tertiary)]">
+                  {showSettingsJson ? 'expand_less' : 'expand_more'}
+                </span>
+              </button>
+
+              {showSettingsJson && (
+                <div className="mt-2">
+                  <textarea
+                    value={settingsJson}
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      setSettingsJsonTouched(true)
+                      setSettingsJson(raw)
+                      try {
+                        const parsed = JSON.parse(raw)
+                        setSettingsJsonError(null)
+                        const env = parsed.env as Record<string, string> | undefined
+                        if (env) {
+                          if (env.ANTHROPIC_BASE_URL) {
+                            setBaseUrl(env.ANTHROPIC_BASE_URL)
+                            if (mode === 'create') {
+                              const matchedPreset = availablePresets.find((p) => p.id !== 'custom' && p.baseUrl === env.ANTHROPIC_BASE_URL)
+                              const targetPreset = requirePreset(
+                                matchedPreset ?? availablePresets.find((p) => p.id === 'custom'),
+                              )
+                              if (targetPreset.id !== selectedPreset.id) {
+                                jsonPastedRef.current = true
+                                setSelectedPreset(targetPreset)
+                              }
+                            }
+                          }
+                          if (env.ANTHROPIC_AUTH_TOKEN && env.ANTHROPIC_AUTH_TOKEN !== '(your API key)') setApiKey(env.ANTHROPIC_AUTH_TOKEN)
+                          const newModels: Partial<ModelMapping> = {}
+                          if (env.ANTHROPIC_MODEL) newModels.main = env.ANTHROPIC_MODEL
+                          if (env.ANTHROPIC_DEFAULT_HAIKU_MODEL) newModels.haiku = env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+                          if (env.ANTHROPIC_DEFAULT_SONNET_MODEL) newModels.sonnet = env.ANTHROPIC_DEFAULT_SONNET_MODEL
+                          if (env.ANTHROPIC_DEFAULT_OPUS_MODEL) newModels.opus = env.ANTHROPIC_DEFAULT_OPUS_MODEL
+                          if (Object.keys(newModels).length > 0) {
+                            setModels((prev) => ({ ...prev, ...newModels }))
+                          }
+                        }
+                      } catch (err) {
+                        setSettingsJsonError(err instanceof Error ? err.message : 'Invalid JSON')
+                      }
+                    }}
+                    rows={12}
+                    spellCheck={false}
+                    className={`w-full text-xs px-3 py-3 rounded-[var(--radius-md)] bg-[var(--color-surface-container-low)] border font-mono leading-relaxed resize-y text-[var(--color-text-secondary)] outline-none ${
+                      settingsJsonError
+                        ? 'border-[var(--color-error)] focus:border-[var(--color-error)]'
+                        : 'border-[var(--color-border)] focus:border-[var(--color-border-focus)]'
+                    }`}
+                  />
+                  {settingsJsonError && (
+                    <p className="text-[11px] text-[var(--color-error)] mt-1">{t('settings.providers.jsonError', { error: settingsJsonError })}</p>
+                  )}
+                  <p className="text-[11px] text-[var(--color-text-tertiary)] mt-1">{t('settings.providers.settingsJsonDesc')}</p>
+                </div>
+              )}
             </div>
           </div>
         )}
 
-        {/* API Format */}
-        {(isCustom || mode === 'edit') ? (
-          <div>
-            <label className="text-sm font-medium text-[var(--color-text-primary)] mb-1 block">{t('settings.providers.apiFormat')}</label>
-            <select
-              value={apiFormat}
-              onChange={(e) => setApiFormat(e.target.value as ApiFormat)}
-              className="w-full text-sm px-3 py-2 rounded-[var(--radius-md)] bg-[var(--color-surface-container-low)] border border-[var(--color-border)] text-[var(--color-text-primary)] outline-none focus:border-[var(--color-border-focus)]"
-            >
-              <option value="anthropic">{t('settings.providers.apiFormatAnthropic')}</option>
-              <option value="openai_chat">{t('settings.providers.apiFormatOpenaiChat')}</option>
-              <option value="openai_responses">{t('settings.providers.apiFormatOpenaiResponses')}</option>
-            </select>
-            {apiFormat !== 'anthropic' && (
-              <p className="text-[11px] text-[var(--color-text-tertiary)] mt-1">{t('settings.providers.proxyHint')}</p>
-            )}
-          </div>
-        ) : apiFormat !== 'anthropic' ? (
-          <div>
-            <label className="text-sm font-medium text-[var(--color-text-primary)] mb-1 block">{t('settings.providers.apiFormat')}</label>
-            <div className="text-xs text-[var(--color-text-tertiary)] px-3 py-2 rounded-[var(--radius-md)] bg-[var(--color-surface-container-low)] border border-[var(--color-border)]">
-              {apiFormat === 'openai_chat' ? t('settings.providers.apiFormatOpenaiChat') : t('settings.providers.apiFormatOpenaiResponses')}
-            </div>
-          </div>
-        ) : null}
-
         <Input
           label={mode === 'edit' ? t('settings.providers.apiKeyKeep') : t('settings.providers.apiKey')}
+          labelAccessory={selectedPreset.websiteUrl ? (
+            <button
+              type="button"
+              onClick={() => void openExternalUrl(selectedPreset.websiteUrl)}
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-text-accent)] transition-colors hover:bg-[var(--color-surface-hover)]"
+            >
+              <span className="material-symbols-outlined text-[13px]">key</span>
+              {t('settings.providers.openApiKeyPage')}
+            </button>
+          ) : undefined}
           required={mode === 'create'}
           type="password"
           value={apiKey}
@@ -500,11 +778,26 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
           placeholder={mode === 'edit' ? '****' : 'sk-...'}
         />
 
-        {/* Model Mapping */}
         <div>
-          <label className="text-sm font-medium text-[var(--color-text-primary)] mb-2 block">{t('settings.providers.modelMapping')}</label>
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <label className="text-sm font-medium text-[var(--color-text-primary)] block">{t('settings.providers.modelMapping')}</label>
+              <p className="text-[11px] text-[var(--color-text-tertiary)] mt-0.5">{t('settings.providers.modelConfigHint')}</p>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleUseDefaultModelForAll}
+              disabled={!normalizedModels.main}
+              className="flex-shrink-0"
+            >
+              <span className="material-symbols-outlined text-[15px]">content_copy</span>
+              {t('settings.providers.copyMainModel')}
+            </Button>
+          </div>
           <div className="grid grid-cols-2 gap-2">
-            <Input label={t('settings.providers.mainModel')} required value={models.main} onChange={(e) => setModels({ ...models, main: e.target.value })} placeholder="Model ID" />
+            <Input label={t('settings.providers.mainModel')} required value={models.main} onChange={(e) => setModels({ ...models, main: e.target.value })} placeholder={t('settings.providers.modelIdPlaceholder')} />
             <Input label={t('settings.providers.haikuModel')} value={models.haiku} onChange={(e) => setModels({ ...models, haiku: e.target.value })} placeholder={t('settings.providers.sameAsMain')} />
             <Input label={t('settings.providers.sonnetModel')} value={models.sonnet} onChange={(e) => setModels({ ...models, sonnet: e.target.value })} placeholder={t('settings.providers.sameAsMain')} />
             <Input label={t('settings.providers.opusModel')} value={models.opus} onChange={(e) => setModels({ ...models, opus: e.target.value })} placeholder={t('settings.providers.sameAsMain')} />
@@ -513,7 +806,7 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
 
         {/* Test connection */}
         <div className="flex items-center gap-3">
-          <Button variant="secondary" size="sm" onClick={handleTest} loading={isTesting} disabled={!baseUrl.trim() || !models.main.trim()}>
+          <Button type="button" variant="secondary" size="sm" onClick={handleTest} loading={isTesting} disabled={!baseUrl.trim() || !normalizedModels.main}>
             {t('settings.providers.testConnection')}
           </Button>
           {testResult && (
@@ -534,61 +827,6 @@ function ProviderFormModal({ open, onClose, mode, provider }: ProviderFormProps)
           )}
         </div>
 
-        {/* Settings JSON — editable, shown for all presets including official */}
-        <div>
-          <label className="text-sm font-medium text-[var(--color-text-primary)] mb-2 block">{t('settings.providers.settingsJson')}</label>
-          <textarea
-            value={settingsJson}
-            onChange={(e) => {
-              const raw = e.target.value
-              setSettingsJson(raw)
-              try {
-                const parsed = JSON.parse(raw)
-                setSettingsJsonError(null)
-                // Auto-fill form fields from parsed JSON env
-                const env = parsed.env as Record<string, string> | undefined
-                if (env) {
-                  if (env.ANTHROPIC_BASE_URL) {
-                    setBaseUrl(env.ANTHROPIC_BASE_URL)
-                    // Auto-switch to matching preset or Custom
-                    if (mode === 'create') {
-                      const matchedPreset = availablePresets.find((p) => p.id !== 'custom' && p.baseUrl === env.ANTHROPIC_BASE_URL)
-                      const targetPreset = requirePreset(
-                        matchedPreset ?? availablePresets.find((p) => p.id === 'custom'),
-                      )
-                      if (targetPreset.id !== selectedPreset.id) {
-                        jsonPastedRef.current = true
-                        setSelectedPreset(targetPreset)
-                      }
-                    }
-                  }
-                  if (env.ANTHROPIC_AUTH_TOKEN && env.ANTHROPIC_AUTH_TOKEN !== '(your API key)') setApiKey(env.ANTHROPIC_AUTH_TOKEN)
-                  const newModels: Partial<ModelMapping> = {}
-                  if (env.ANTHROPIC_MODEL) newModels.main = env.ANTHROPIC_MODEL
-                  if (env.ANTHROPIC_DEFAULT_HAIKU_MODEL) newModels.haiku = env.ANTHROPIC_DEFAULT_HAIKU_MODEL
-                  if (env.ANTHROPIC_DEFAULT_SONNET_MODEL) newModels.sonnet = env.ANTHROPIC_DEFAULT_SONNET_MODEL
-                  if (env.ANTHROPIC_DEFAULT_OPUS_MODEL) newModels.opus = env.ANTHROPIC_DEFAULT_OPUS_MODEL
-                  if (Object.keys(newModels).length > 0) {
-                    setModels((prev) => ({ ...prev, ...newModels }))
-                  }
-                }
-              } catch (err) {
-                setSettingsJsonError(err instanceof Error ? err.message : 'Invalid JSON')
-              }
-            }}
-            rows={16}
-            spellCheck={false}
-            className={`w-full text-xs px-3 py-3 rounded-[var(--radius-md)] bg-[var(--color-surface-container-low)] border font-mono leading-relaxed resize-y text-[var(--color-text-secondary)] outline-none ${
-              settingsJsonError
-                ? 'border-[var(--color-error)] focus:border-[var(--color-error)]'
-                : 'border-[var(--color-border)] focus:border-[var(--color-border-focus)]'
-            }`}
-          />
-          {settingsJsonError && (
-            <p className="text-[11px] text-[var(--color-error)] mt-1">{t('settings.providers.jsonError', { error: settingsJsonError })}</p>
-          )}
-          <p className="text-[11px] text-[var(--color-text-tertiary)] mt-1">{t('settings.providers.settingsJsonDesc')}</p>
-        </div>
       </div>
     </Modal>
   )
@@ -613,20 +851,22 @@ function PermissionSettings() {
       <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.permissions.title')}</h2>
       <p className="text-sm text-[var(--color-text-tertiary)] mb-4">{t('settings.permissions.description')}</p>
 
-      <div className="flex flex-col gap-2">
+      <div className="divide-y divide-[var(--color-border)]/60">
         {MODES.map(({ mode, icon, label, desc }) => {
           const isSelected = permissionMode === mode
           return (
             <button
               key={mode}
               onClick={() => setPermissionMode(mode)}
-              className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-left ${
+              className={`flex w-full items-center gap-3 px-1 py-3 text-left transition-colors ${
                 isSelected
-                  ? 'border-[var(--color-brand)] bg-[var(--color-surface-container)] shadow-[var(--shadow-focus-ring)]'
-                  : 'border-[var(--color-border)] hover:border-[var(--color-border-focus)] hover:bg-[var(--color-surface-hover)]'
+                  ? 'text-[var(--color-brand)]'
+                  : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
               }`}
             >
-              <span className="material-symbols-outlined text-[20px] text-[var(--color-text-secondary)]">{icon}</span>
+              <span className={`material-symbols-outlined text-[20px] ${
+                isSelected ? 'text-[var(--color-brand)]' : 'text-[var(--color-text-secondary)]'
+              }`}>{icon}</span>
               <div className="flex-1">
                 <div className="text-sm font-semibold text-[var(--color-text-primary)]">{label}</div>
                 <div className="text-xs text-[var(--color-text-tertiary)]">{desc}</div>
@@ -902,9 +1142,7 @@ function AgentsSettings() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full ${getAgentSourceAccentClass(source)}`}>
-                          <span className="material-symbols-outlined text-[16px]">
-                            {getAgentSourceIcon(source)}
-                          </span>
+                          <InlineIcon icon={getAgentSourceIcon(source)} size={16} />
                         </span>
                         <h4 className="text-sm font-semibold text-[var(--color-text-primary)]">
                           {sourceLabel}
@@ -1149,9 +1387,9 @@ function getAgentSourceIcon(source: AgentSource) {
     case 'userSettings':
       return 'person'
     case 'projectSettings':
-      return 'folder'
+      return <FolderLineIcon size={16} />
     case 'localSettings':
-      return 'folder_lock'
+      return <FolderLineIcon size={16} />
     case 'policySettings':
       return 'shield'
     case 'plugin':
@@ -1190,6 +1428,29 @@ function MetaPill({ children }: { children: ReactNode }) {
   )
 }
 
+function InlineIcon({
+  icon,
+  size = 14,
+  className = '',
+}: {
+  icon: ReactNode
+  size?: number
+  className?: string
+}) {
+  if (typeof icon === 'string') {
+    return (
+      <span
+        className={`material-symbols-outlined flex-shrink-0 ${className}`}
+        style={{ fontSize: size }}
+      >
+        {icon}
+      </span>
+    )
+  }
+
+  return <>{icon}</>
+}
+
 function SummaryCard({
   label,
   value,
@@ -1198,13 +1459,13 @@ function SummaryCard({
 }: {
   label: string
   value: string
-  icon: string
+  icon: ReactNode
   className?: string
 }) {
   return (
     <div className={`rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3 min-w-0 ${className}`}>
       <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)] min-w-0">
-        <span className="material-symbols-outlined text-[14px] flex-shrink-0">{icon}</span>
+        <InlineIcon icon={icon} size={14} className="flex-shrink-0" />
         <span className="truncate">{label}</span>
       </div>
       <div className="mt-2 text-lg font-semibold text-[var(--color-text-primary)] truncate">
@@ -1221,12 +1482,12 @@ function DetailStat({
 }: {
   label: string
   value: string
-  icon: string
+  icon: ReactNode
 }) {
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
-        <span className="material-symbols-outlined text-[14px]">{icon}</span>
+        <InlineIcon icon={icon} size={14} />
         <span>{label}</span>
       </div>
       <div className="mt-2 text-base font-semibold text-[var(--color-text-primary)] break-all">
@@ -1258,223 +1519,6 @@ function SkillSettings() {
         {t('settings.skills.description')}
       </p>
       <SkillList />
-    </div>
-  )
-}
-
-// ─── About Settings ──────────────────────────────────────
-
-const GITHUB_REPO = 'https://github.com/NanmiCoder/cc-haha'
-const AUTHOR_GITHUB = 'https://github.com/NanmiCoder'
-const SOCIAL_LINKS = [
-  { name: 'Bilibili', icon: '/icons/bilibili.svg', url: 'https://space.bilibili.com/434377496', label: '程序员阿江-Relakkes' },
-  { name: 'Douyin', icon: '/icons/douyin.svg', url: 'https://www.douyin.com/user/MS4wLjABAAAATJPY7LAlaa5X-c8uNdWkvz0jUGgpw4eeXIwu_8BhvqE', label: '程序员阿江-Relakkes' },
-  { name: 'Xiaohongshu', icon: '/icons/xiaohongshu.svg', url: 'https://www.xiaohongshu.com/user/profile/5f58bd990000000001003753', label: '程序员阿江-Relakkes' },
-] as const
-
-function AboutSettings() {
-  const t = useTranslation()
-  const [version, setVersion] = useState('')
-  const updateStatus = useUpdateStore((s) => s.status)
-  const availableVersion = useUpdateStore((s) => s.availableVersion)
-  const releaseNotes = useUpdateStore((s) => s.releaseNotes)
-  const progressPercent = useUpdateStore((s) => s.progressPercent)
-  const error = useUpdateStore((s) => s.error)
-  const checkedAt = useUpdateStore((s) => s.checkedAt)
-  const checkForUpdates = useUpdateStore((s) => s.checkForUpdates)
-  const installUpdate = useUpdateStore((s) => s.installUpdate)
-  const initialize = useUpdateStore((s) => s.initialize)
-
-  useEffect(() => {
-    import('@tauri-apps/api/app').then((mod) => mod.getVersion()).then(setVersion).catch(() => setVersion('0.1.0'))
-  }, [])
-
-  useEffect(() => {
-    void initialize()
-  }, [initialize])
-
-  const openUrl = (url: string) => {
-    import('@tauri-apps/plugin-shell').then((mod) => mod.open(url)).catch(() => window.open(url, '_blank'))
-  }
-
-  const checkedAtText =
-    checkedAt
-      ? new Date(checkedAt).toLocaleString(undefined, {
-          hour: '2-digit',
-          minute: '2-digit',
-          month: 'short',
-          day: 'numeric',
-        })
-      : null
-
-  const updateDescription =
-    updateStatus === 'checking'
-      ? t('update.checking')
-      : updateStatus === 'downloading'
-        ? t('update.progress', { progress: String(progressPercent) })
-        : updateStatus === 'restarting'
-          ? t('update.restarting')
-          : updateStatus === 'available' && availableVersion
-            ? t('update.newVersion', { version: availableVersion })
-            : updateStatus === 'up-to-date'
-              ? t('update.upToDate', { version: version || t('update.currentVersionUnknown') })
-              : error
-                ? t('update.failed', { error })
-                : t('update.idle')
-
-  return (
-    <div className="w-full min-w-0 max-w-lg mx-auto flex flex-col items-center py-6">
-      {/* Logo + App Name + Version */}
-      <img src="/app-icon.jpg" alt="Claude Code Haha" className="w-20 h-20 rounded-2xl shadow-md mb-4" />
-      <h1 className="text-xl font-bold text-[var(--color-text-primary)]">Claude Code Haha</h1>
-      {version && (
-        <span className="text-xs text-[var(--color-text-tertiary)] mt-1">{t('settings.about.version')} {version}</span>
-      )}
-
-      {/* GitHub Repo */}
-      <div className="mt-6 w-full">
-        <button
-          onClick={() => openUrl(GITHUB_REPO)}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl border border-[var(--color-border)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-        >
-          <img src="/icons/github.svg" alt="GitHub" className="w-5 h-5 opacity-70" />
-          <div className="flex-1 text-left">
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">NanmiCoder/cc-haha</div>
-            <div className="text-xs text-[var(--color-text-tertiary)]">{t('settings.about.starHint')}</div>
-          </div>
-          <span className="material-symbols-outlined text-[16px] text-[var(--color-text-tertiary)]">open_in_new</span>
-        </button>
-      </div>
-
-      <div className="mt-4 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium text-[var(--color-text-primary)]">{t('settings.about.updates')}</div>
-            <div className="text-xs text-[var(--color-text-tertiary)] mt-1">
-              {t('settings.about.updatesDesc')}
-            </div>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => void checkForUpdates()}
-            loading={updateStatus === 'checking'}
-          >
-            {t('update.checkNow')}
-          </Button>
-        </div>
-
-        <div className="mt-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-xs uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-                {t('settings.about.version')}
-              </div>
-              <div className="text-sm font-medium text-[var(--color-text-primary)] mt-1">
-                {version || t('update.currentVersionUnknown')}
-              </div>
-            </div>
-
-            {availableVersion && (
-              <div className="text-right">
-                <div className="text-xs uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-                  {t('update.availableLabel')}
-                </div>
-                <div className="text-sm font-medium text-[var(--color-text-primary)] mt-1">
-                  {availableVersion}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <p className={`mt-3 text-sm ${error ? 'text-[var(--color-error)]' : 'text-[var(--color-text-secondary)]'}`}>
-            {updateDescription}
-          </p>
-
-          {checkedAtText && (
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">
-              {t('update.checkedAt', { time: checkedAtText })}
-            </p>
-          )}
-
-          {(updateStatus === 'downloading' || updateStatus === 'restarting') && (
-            <div className="mt-3">
-              <div className="h-1.5 bg-[var(--color-surface-container-low)] rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-[var(--color-text-accent)] transition-all duration-300"
-                  style={{ width: `${Math.min(progressPercent, 100)}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {releaseNotes && availableVersion && (
-            <div className="mt-3 rounded-lg bg-[var(--color-surface-container-low)] px-3 py-2">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-[var(--color-text-tertiary)]">
-                {t('update.releaseNotes')}
-              </div>
-              <p className="mt-1 text-xs leading-5 text-[var(--color-text-secondary)] whitespace-pre-wrap">
-                {releaseNotes}
-              </p>
-            </div>
-          )}
-
-          {availableVersion && (
-            <div className="mt-3 flex justify-end">
-              <Button
-                size="sm"
-                onClick={() => void installUpdate()}
-                loading={updateStatus === 'downloading' || updateStatus === 'restarting'}
-                disabled={updateStatus === 'checking'}
-              >
-                {updateStatus === 'restarting' ? t('update.restarting') : t('update.now')}
-              </Button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Divider */}
-      <div className="w-full border-t border-[var(--color-border)]/40 my-6" />
-
-      {/* Author */}
-      <div className="w-full">
-        <h3 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-3">{t('settings.about.author')}</h3>
-        <button
-          onClick={() => openUrl(AUTHOR_GITHUB)}
-          className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-        >
-          <img src="/icons/github.svg" alt="GitHub" className="w-4 h-4 opacity-60" />
-          <span className="text-sm text-[var(--color-text-primary)]">程序员阿江-Relakkes</span>
-          <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">GitHub</span>
-        </button>
-      </div>
-
-      {/* Social Media */}
-      <div className="w-full mt-4">
-        <h3 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase tracking-wider mb-3">{t('settings.about.socialMedia')}</h3>
-        <div className="flex flex-col gap-0.5">
-          {SOCIAL_LINKS.map((link) => (
-            <button
-              key={link.name}
-              onClick={() => openUrl(link.url)}
-              className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-            >
-              <img src={link.icon} alt={link.name} className="w-4 h-4 opacity-60" />
-              <span className="text-sm text-[var(--color-text-primary)]">{link.label}</span>
-              <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">{link.name}</span>
-            </button>
-          ))}
-          <button
-            onClick={() => openUrl('mailto:relakkes@gmail.com')}
-            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer"
-          >
-            <span className="material-symbols-outlined text-[16px] opacity-60">mail</span>
-            <span className="text-sm text-[var(--color-text-primary)]">relakkes@gmail.com</span>
-            <span className="text-xs text-[var(--color-text-tertiary)] ml-auto">Email</span>
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

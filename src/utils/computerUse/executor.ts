@@ -8,9 +8,12 @@
 
 import type {
   ComputerExecutor,
+  DesktopIntentResult,
+  DesktopObservation,
   DisplayGeometry,
   FrontmostApp,
   InstalledApp,
+  OpenApplicationResult,
   ResolvePrepareCaptureResult,
   RunningApp,
   ScreenshotResult,
@@ -18,8 +21,8 @@ import type {
 import { API_RESIZE_PARAMS, targetImageSize } from '../../vendor/computer-use-mcp/index.js'
 import { sleep } from '../sleep.js'
 import {
-  CLI_HOST_BUNDLE_ID,
-  getCliComputerUseCapabilities,
+  DESKTOP_HOST_BUNDLE_ID,
+  getDesktopComputerUseCapabilities,
   isComputerUseSupportedPlatform,
 } from './common.js'
 import { callPythonHelper } from './pythonBridge.js'
@@ -27,7 +30,7 @@ import { callPythonHelper } from './pythonBridge.js'
 const SCREENSHOT_JPEG_QUALITY = 0.75
 const MOVE_SETTLE_MS = 50
 const hostBundleId =
-  process.env.CC_HAHA_COMPUTER_USE_HOST_BUNDLE_ID || CLI_HOST_BUNDLE_ID
+  process.env.YCODE_COMPUTER_USE_HOST_BUNDLE_ID || DESKTOP_HOST_BUNDLE_ID
 
 type PythonDisplayGeometry = DisplayGeometry
 
@@ -108,24 +111,27 @@ async function typeViaClipboard(text: string): Promise<void> {
   }
 }
 
-export function createCliExecutor(_opts: {
+export function createDesktopExecutor(_opts: {
   getMouseAnimationEnabled: () => boolean
   getHideBeforeActionEnabled: () => boolean
 }): ComputerExecutor {
   if (!isComputerUseSupportedPlatform()) {
     throw new Error(
-      `createCliExecutor called on ${process.platform}. Computer control is only supported on macOS and Windows.`,
+      `createDesktopExecutor called on ${process.platform}. Computer control is only supported on macOS and Windows.`,
     )
   }
 
   return {
     capabilities: {
-      ...getCliComputerUseCapabilities(),
+      ...getDesktopComputerUseCapabilities(),
       hostBundleId,
     },
 
-    async prepareForAction(_allowlistBundleIds, _displayId): Promise<string[]> {
-      return callPythonHelper('prepare_for_action', {})
+    async prepareForAction(allowlistBundleIds, displayId): Promise<string[]> {
+      return callPythonHelper('prepare_for_action', {
+        allowlistBundleIds,
+        displayId,
+      })
     },
 
     async previewHideSet(_allowlistBundleIds, _displayId) {
@@ -244,6 +250,46 @@ export function createCliExecutor(_opts: {
       return callPythonHelper('app_under_point', { x, y })
     },
 
+    async observeDesktop(opts): Promise<DesktopObservation> {
+      if (process.platform !== 'win32') {
+        return {
+          frontmostApp: await callPythonHelper<FrontmostApp | null>('frontmost_app', {}),
+          windows: [],
+          uiElements: [],
+          semanticUi: 'none',
+          elementCount: 0,
+          truncated: false,
+        }
+      }
+      return callPythonHelper('observe_desktop', {
+        allowedBundleIds: opts.allowedBundleIds,
+        displayId: opts.displayId,
+        maxElements: opts.maxElements,
+        hostBundleId,
+      })
+    },
+
+    async clickUiElement(elementId: string): Promise<void> {
+      if (process.platform !== 'win32') {
+        throw new Error('Structured UI element clicks are only available on Windows in this build.')
+      }
+      await callPythonHelper('click_ui_element', { elementId })
+    },
+
+    async focusUiElement(elementId: string): Promise<void> {
+      if (process.platform !== 'win32') {
+        throw new Error('Structured UI element focus is only available on Windows in this build.')
+      }
+      await callPythonHelper('focus_ui_element', { elementId })
+    },
+
+    async setUiElementValue(elementId: string, text: string): Promise<{ usedValuePattern: boolean }> {
+      if (process.platform !== 'win32') {
+        throw new Error('Structured UI element value setting is only available on Windows in this build.')
+      }
+      return callPythonHelper('set_ui_element_value', { elementId, text })
+    },
+
     async listInstalledApps(): Promise<InstalledApp[]> {
       return callPythonHelper('list_installed_apps', {})
     },
@@ -252,11 +298,38 @@ export function createCliExecutor(_opts: {
       return callPythonHelper('list_running_apps', {})
     },
 
-    async openApp(bundleId: string): Promise<void> {
-      await callPythonHelper('open_app', { bundleId })
+    async openApp(bundleId: string): Promise<OpenApplicationResult> {
+      const result = await callPythonHelper<OpenApplicationResult | boolean>('open_app', { bundleId })
+      if (typeof result === 'boolean') {
+        return {
+          opened: result,
+          activated: result,
+          targetBundleId: bundleId,
+          frontmostApp: await callPythonHelper<FrontmostApp | null>('frontmost_app', {}),
+        }
+      }
+      return result
+    },
+
+    async runDesktopIntent(opts): Promise<DesktopIntentResult> {
+      if (process.platform !== 'win32') {
+        return {
+          intent: opts.intent,
+          handled: false,
+          guidance: 'Direct desktop intents are only implemented on Windows in this build. Use observe_desktop and regular Computer Use tools as fallback.',
+        }
+      }
+      return callPythonHelper('run_desktop_intent', {
+        intent: opts.intent,
+        instruction: opts.instruction,
+        appBundleId: opts.appBundleId,
+        query: opts.query,
+      })
     },
   }
 }
+
+export const createCliExecutor = createDesktopExecutor
 
 export async function unhideComputerUseApps(_bundleIds: readonly string[]): Promise<void> {
   return

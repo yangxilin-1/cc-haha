@@ -1,5 +1,7 @@
 // Source: src/server/services/sessionService.ts
 
+export type SessionMode = 'chat' | 'code'
+
 export type SessionListItem = {
   id: string
   title: string
@@ -9,6 +11,7 @@ export type SessionListItem = {
   projectPath: string
   workDir: string | null
   workDirExists: boolean
+  mode?: SessionMode
 }
 
 export type MessageEntry = {

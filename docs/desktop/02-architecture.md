@@ -1,6 +1,6 @@
 # 架构设计
 
-> 从 Tauri 窗口到 CLI 子进程，桌面端的三层通信架构。
+> 从 Tauri 窗口到 Desktop Server，再到原生 Chat/Code Engine 的桌面端架构。CLI 只作为历史实现和思想参考，不再是运行时依赖。
 
 ---
 
@@ -56,12 +56,12 @@
 │  └───────────┬─────────────────┘    │
 │              │ HTTP + WebSocket      │
 │  ┌───────────▼─────────────────┐    │
-│  │   Server Sidecar (Bun)      │    │  ← API 服务 + 会话管理
+│  │   Desktop Server (Bun)      │    │  ← API 服务 + 原生 runtime
 │  │   Port: 动态分配             │    │
 │  └───────────┬─────────────────┘    │
-│              │ 子进程 spawn          │
+│              │ 进程内 runtime 调用    │
 │  ┌───────────▼─────────────────┐    │
-│  │   CLI 子进程                 │    │  ← AI 对话 + 工具执行
+│  │   ChatEngine / CodeEngine   │    │  ← provider + tools + permission
 │  └─────────────────────────────┘    │
 │                                     │
 │  ┌─────────────────────────────┐    │
@@ -91,10 +91,10 @@
 **启动流程**：
 
 1. `reserve_local_port()` — 绑定 `127.0.0.1:0` 获取 OS 随机端口，再释放
-2. `start_server_sidecar(port)` — 启动 `claude-sidecar server --host 127.0.0.1 --port {port}`
+2. `start_server_sidecar(port)` — 启动桌面 server sidecar：`ycode-sidecar server --host 127.0.0.1 --port {port}`（旧产物名可能仍在迁移中）
 3. `wait_for_server()` — TCP 探活轮询，150ms 间隔，10s 超时
 4. WebView 加载 React 应用
-5. `start_adapters_sidecar()` — 启动 `claude-sidecar adapters --feishu --telegram`，注入 `ADAPTER_SERVER_URL` 环境变量
+5. `start_adapters_sidecar()` — 启动 adapters sidecar（当前产物名仍可能处在 `claude-sidecar` 到 `ycode-sidecar` 的迁移期），注入 `ADAPTER_SERVER_URL` 环境变量
 
 **退出处理**：`RunEvent::Exit` / `ExitRequested` 时自动 kill 两个 sidecar。
 
@@ -102,9 +102,9 @@
 - **macOS**：overlay titlebar + 自定义菜单（关于、设置 Cmd+,、编辑、窗口）
 - **Windows**：`set_decorations(false)` 隐藏原生标题栏，前端自定义渲染 `TitleBar` + `WindowControls`
 
-### 第二层：Server Sidecar
+### 第二层：Desktop Server
 
-**职责**：HTTP REST API + WebSocket 网关 + 会话管理 + 协议代理
+**职责**：HTTP REST API + WebSocket 网关 + 会话管理 + 协议代理 + 原生 Chat/Code runtime
 
 核心文件 `src/server/`（项目根目录），分层结构：
 
@@ -116,26 +116,43 @@ src/server/
 ├── sessionManager.ts     # 会话管理器
 ├── api/                  # REST 路由层 (14 个模块)
 ├── services/             # 业务服务层 (14 个模块)
+├── runtime/              # ChatEngine / CodeEngine / ToolRuntime / PermissionService
+├── storage/              # SessionStore / TranscriptStore
 ├── ws/                   # WebSocket 处理
 ├── proxy/                # API 代理（Anthropic/OpenAI 协议转换）
 ├── middleware/            # auth、cors、errorHandler
 └── config/               # Provider 预设
 ```
 
-### 第三层：CLI 子进程
+### 第三层：原生 Runtime
 
-**职责**：AI 对话核心、工具执行、Agent 编排
+**职责**：AI 对话核心、工具执行、权限裁决、Agent 循环、transcript 写入
 
-Server 为每个 Session spawn 一个 CLI 子进程，通过 stdin/stdout JSON 通信。
+Desktop Server 按 session mode 调用原生 runtime：
+
+| Runtime | 职责 |
+|---------|------|
+| `ChatEngine` | 对话和会话级工具，不绑定项目，不启用项目文件/Shell/MCP 工具，不注入桌面端身份或行为 system prompt |
+| `CodeEngine` | 项目会话、tool loop、工具结果回传、代码任务；默认不注入桌面端身份或行为 system prompt |
+| `ProviderAdapter` | 多服务商请求、协议转换、模型选择 |
+| `ChatToolRuntime` | Chat 专用非项目工具：时间、计算、天气、网页搜索、网页读取；Chat 可以基于输入框或附件里的代码写代码，但不能读写项目文件 |
+| `ToolRuntime` | 文件读写、搜索、patch、命令执行等桌面原生工具，返回耗时、退出码、超时、截断、增删行、reverse patch 和 sha256 等 metadata；patch 回滚也复用同一工具和权限链路 |
+| `PermissionService` | 写入和命令执行的审批、always 规则、取消 |
+| `SessionStore` | Ycode 数据目录、项目目录、session 文件发现和生命周期 |
+| `TranscriptStore` | JSONL 初始化、读取、标题提取、消息归一化和追加写入 |
+
+CLI 子进程、SDK bridge、stdout/stderr 翻译层不属于新的桌面端消息主链路。
 
 ### Sidecar 构建
 
 使用 Bun 编译为独立二进制（`desktop/scripts/build-sidecars.ts`）：
 
-三种模式共用一个入口 `desktop/sidecars/claude-sidecar.ts`：
-- `server` — 启动 HTTP/WS 服务
-- `cli` — 启动 CLI 子进程
-- `adapters` — 启动 IM 适配器（解析 `--feishu`/`--telegram` 参数，检查凭据后按需加载）
+目标形态下，sidecar 只保留桌面后台能力：
+
+- `server` — 启动 HTTP/WS 服务和原生 runtime。
+- `adapters` — 启动 IM 适配器（解析 `--feishu`/`--telegram` 参数，检查凭据后按需加载）。
+
+旧 `cli` sidecar 模式属于迁移清理项，不应被新功能引用。
 
 编译产物放置在 `desktop/src-tauri/binaries/`，Tauri 打包时自动包含。
 
@@ -156,6 +173,7 @@ ws://127.0.0.1:{port}/ws/{sessionId}
 | type | 说明 |
 |------|------|
 | `user_message` | 用户消息（含 content, attachments） |
+| `rollback_patch` | 从工具结果卡片发起 patch 回滚，携带 `originalToolUseId` 和 `reversePatch`，服务端按新的 `apply_patch` 工具调用处理 |
 | `permission_response` | 权限审批（requestId, allowed, rule） |
 | `set_permission_mode` | 切换权限模式 |
 | `stop_generation` | 停止生成 |
@@ -170,7 +188,7 @@ ws://127.0.0.1:{port}/ws/{sessionId}
 | `content_start` / `content_delta` | 流式文本 |
 | `thinking` | Extended Thinking |
 | `tool_use_complete` | 工具调用就绪 |
-| `tool_result` | 工具执行结果 |
+| `tool_result` | 工具执行结果，附带桌面端 metadata；provider 续写历史时只使用协议允许的 tool result 内容 |
 | `permission_request` | 权限请求 |
 | `message_complete` | 消息完成（含 Token 统计） |
 | `error` | 错误通知 |
@@ -233,7 +251,7 @@ ws://127.0.0.1:{port}/ws/{sessionId}
 | `GET/PUT` | `/api/adapters` | 适配器配置 |
 | `GET/PUT` | `/api/settings/user` | 用户设置 |
 | `GET/PUT` | `/api/permissions/mode` | 权限模式 |
-| `GET` | `/api/tasks/lists` | CLI 任务清单 |
+| `GET` | `/api/tasks/lists` | 桌面任务清单 |
 | `GET` | `/health` | 健康检查 |
 
 ---
@@ -255,7 +273,7 @@ ws://127.0.0.1:{port}/ws/{sessionId}
 | `agentStore` | Agent 定义列表 |
 | `skillStore` | 技能元数据、详情 |
 | `adapterStore` | 适配器配置、配对码 |
-| `cliTaskStore` | per-session CLI 任务追踪 |
+| `desktopTaskStore` | per-session 桌面任务追踪 |
 
 ### 数据流
 
@@ -269,9 +287,9 @@ ws://127.0.0.1:{port}/ws/{sessionId}
 |------|------|
 | 标签页状态 | `localStorage` |
 | 语言偏好 | `localStorage` |
-| 会话数据 | Server JSONL (`~/.claude/sessions/`) |
+| 会话数据 | Ycode Desktop data dir 下的 Server JSONL，由 `SessionStore` / `TranscriptStore` 管理 |
 | 设置 | Server API |
-| 适配器配置 | `~/.claude/adapters.json` |
+| 适配器配置 | Ycode Desktop data dir 下的 `adapters.json` |
 
 ---
 
@@ -295,10 +313,10 @@ Server 内置代理层（`src/server/proxy/`），统一不同 AI 提供商的 A
 
 ## 适配器架构
 
-适配器系统让 Telegram/飞书等 IM 平台接入 Claude Code。
+适配器系统让 Telegram/飞书等 IM 平台接入 Ycode Desktop runtime。
 
 ```
-IM 平台 → Adapter 进程 → HTTP + WebSocket → Server → CLI
+IM 平台 → Adapter 进程 → HTTP + WebSocket → Desktop Server → ChatEngine/CodeEngine
 ```
 
 ### 共享模块 `adapters/common/`
@@ -358,7 +376,7 @@ desktop/
 │   ├── Cargo.toml
 │   └── tauri.conf.json
 ├── sidecars/
-│   └── claude-sidecar.ts            #   统一入口 (server/cli/adapters)
+│   └── ycode-sidecar.ts             #   目标入口 (server/adapters)，旧命名待迁移
 └── scripts/
     ├── build-sidecars.ts
     ├── build-macos-arm64.sh
@@ -367,6 +385,7 @@ desktop/
 src/server/                           # 服务端（项目根目录）
 ├── api/                             #   REST 路由 (14 个模块)
 ├── services/                        #   业务服务 (14 个模块)
+├── runtime/                         #   原生 Chat/Code runtime
 ├── ws/                              #   WebSocket 处理
 ├── proxy/                           #   协议代理转换
 ├── middleware/                      #   auth, cors, errorHandler

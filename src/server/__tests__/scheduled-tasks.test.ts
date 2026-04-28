@@ -309,6 +309,38 @@ describe('Scheduled Tasks API', () => {
     expect(body.task.prompt).toBe('Daily review')
   })
 
+  it('should run scheduled tasks through the desktop runtime path', async () => {
+    const createReq = new Request('http://localhost/api/scheduled-tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cron: '0 9 * * *', prompt: 'Test task' }),
+    })
+    const createResp = await handleScheduledTasksApi(
+      createReq,
+      new URL(createReq.url),
+      ['api', 'scheduled-tasks'],
+    )
+    const { task } = (await createResp.json()) as { task: { id: string } }
+
+    const runReq = new Request(
+      `http://localhost/api/scheduled-tasks/${task.id}/run`,
+      { method: 'POST' },
+    )
+    const runResp = await handleScheduledTasksApi(
+      runReq,
+      new URL(runReq.url),
+      ['api', 'scheduled-tasks', task.id, 'run'],
+    )
+    const body = (await runResp.json()) as {
+      run: { taskId: string; prompt: string; status: string }
+    }
+
+    expect(runResp.status).toBe(200)
+    expect(body.run.taskId).toBe(task.id)
+    expect(body.run.prompt).toBe('Test task')
+    expect(['completed', 'failed', 'timeout']).toContain(body.run.status)
+  })
+
   it('should CRUD a full lifecycle', async () => {
     // Create
     const createReq = new Request('http://localhost/api/scheduled-tasks', {

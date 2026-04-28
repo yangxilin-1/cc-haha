@@ -1,6 +1,6 @@
-import { useCLITaskStore } from '../../stores/cliTaskStore'
+import { useDesktopTaskStore } from '../../stores/desktopTaskStore'
 import { useTranslation } from '../../i18n'
-import type { CLITask } from '../../types/cliTask'
+import type { DesktopTask } from '../../types/desktopTask'
 
 const statusConfig = {
   pending: {
@@ -27,7 +27,7 @@ export function SessionTaskBar() {
     toggleExpanded,
     completedAndDismissed,
     resetCompletedTasks,
-  } = useCLITaskStore()
+  } = useDesktopTaskStore()
   const t = useTranslation()
 
   if (tasks.length === 0) return null
@@ -51,11 +51,7 @@ export function SessionTaskBar() {
             className="flex min-w-0 flex-1 items-center gap-3 rounded-[var(--radius-md)] px-2 py-1 hover:bg-[var(--color-surface-container-low)] transition-colors"
           >
             <div className="flex items-center justify-center w-6 h-6 rounded-[var(--radius-md)] bg-[var(--color-secondary)]/10">
-              <span
-                className="material-symbols-outlined text-[14px] text-[var(--color-secondary)]"
-              >
-                checklist
-              </span>
+              <svg className="w-[14px] h-[14px] text-[var(--color-secondary)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 11 12 14 22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
             </div>
 
             <span className="text-xs font-semibold text-[var(--color-text-primary)]">
@@ -79,12 +75,7 @@ export function SessionTaskBar() {
               {completedCount}/{totalCount}
             </span>
 
-            <span
-              className="material-symbols-outlined text-[14px] text-[var(--color-text-tertiary)] transition-transform duration-200"
-              style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }}
-            >
-              expand_less
-            </span>
+            <svg className="w-[14px] h-[14px] text-[var(--color-text-tertiary)] transition-transform duration-200" style={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15" /></svg>
           </button>
 
           {allCompleted && (
@@ -94,7 +85,7 @@ export function SessionTaskBar() {
               onClick={() => { void resetCompletedTasks() }}
               className="flex shrink-0 items-center justify-center rounded-[var(--radius-md)] p-1.5 text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-container-low)] hover:text-[var(--color-text-primary)] transition-colors"
             >
-              <span className="material-symbols-outlined text-[16px]">close</span>
+              <svg className="w-[16px] h-[16px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
           )}
         </div>
@@ -112,16 +103,22 @@ export function SessionTaskBar() {
   )
 }
 
-function TaskItem({ task }: { task: CLITask }) {
+function TaskItem({ task }: { task: DesktopTask }) {
   const config = statusConfig[task.status]
 
   return (
     <div className="flex items-start gap-2 py-1.5 px-1 rounded-md">
       <span
-        className="material-symbols-outlined text-[16px] mt-px shrink-0"
-        style={{ color: config.color, fontVariationSettings: "'FILL' 1" }}
+        className="w-[16px] h-[16px] mt-px shrink-0"
+        style={{ color: config.color }}
       >
-        {config.icon}
+        {task.status === 'completed' ? (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+        ) : task.status === 'in_progress' ? (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+        ) : (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /></svg>
+        )}
       </span>
 
       <div className="flex-1 min-w-0">
@@ -149,7 +146,7 @@ function TaskItem({ task }: { task: CLITask }) {
 
         {task.owner && (
           <span className="text-[10px] text-[var(--color-text-tertiary)] mt-0.5 inline-flex items-center gap-0.5">
-            <span className="material-symbols-outlined text-[10px]">person</span>
+            <svg className="w-[10px] h-[10px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
             {task.owner}
           </span>
         )}

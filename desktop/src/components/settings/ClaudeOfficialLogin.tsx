@@ -2,11 +2,11 @@
 //
 // 显示当前 Claude Official OAuth 登录状态,提供 Login / Logout 按钮。
 // 点击 Login 调 Tauri shell.open 打开浏览器走 OAuth flow;浏览器回 callback
-// 到 haha server 后,store 的 polling 自动刷新 UI 展示"已登录"。
+// 到 ycode server 后,store 的 polling 自动刷新 UI 展示"已登录"。
 
 import { useEffect } from 'react'
 import { open as shellOpen } from '@tauri-apps/plugin-shell'
-import { useHahaOAuthStore } from '../../stores/hahaOAuthStore'
+import { useYcodeOAuthStore } from '../../stores/ycodeOAuthStore'
 import { useTranslation } from '../../i18n'
 
 export function ClaudeOfficialLogin() {
@@ -20,7 +20,7 @@ export function ClaudeOfficialLogin() {
     logout,
     startPolling,
     stopPolling,
-  } = useHahaOAuthStore()
+  } = useYcodeOAuthStore()
 
   useEffect(() => {
     fetchStatus()
@@ -35,7 +35,7 @@ export function ClaudeOfficialLogin() {
         startPolling()
       } catch (err) {
         console.error('[ClaudeOfficialLogin] shellOpen failed:', err)
-        useHahaOAuthStore.setState({
+        useYcodeOAuthStore.setState({
           error: t('settings.claudeOfficialLogin.openBrowserFailed'),
         })
       }
@@ -66,7 +66,7 @@ export function ClaudeOfficialLogin() {
     return (
       <div className="flex items-center gap-3 text-sm">
         <span className="text-[var(--color-success)]">
-          ✓ {t('settings.claudeOfficialLogin.loggedInPrefix')} {subTypeLabel})
+          ✓ {t('settings.claudeOfficialLogin.loggedInPrefix')} {subTypeLabel}
         </span>
         <button
           type="button"

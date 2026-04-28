@@ -307,7 +307,7 @@ describe('MessageList nested tool calls', () => {
             {
               id: 'assistant-1',
               type: 'assistant_text',
-              content: '先看 CLI 和服务端入口。',
+              content: '先看 runtime 和服务端入口。',
               timestamp: 2,
             },
             {
@@ -331,11 +331,11 @@ describe('MessageList nested tool calls', () => {
       expect(writeText).toHaveBeenCalledWith('再看 desktop 前后端边界。')
     })
     expect(writeText).not.toHaveBeenCalledWith(
-      '先看 CLI 和服务端入口。\n再看 desktop 前后端边界。'
+      '先看 runtime 和服务端入口。\n再看 desktop 前后端边界。'
     )
   })
 
-  it('shows raw startup details under translated CLI startup errors', () => {
+  it('shows raw startup details under translated runtime startup errors', () => {
     useChatStore.setState({
       sessions: {
         [ACTIVE_TAB]: makeSessionState({
@@ -345,7 +345,7 @@ describe('MessageList nested tool calls', () => {
               type: 'error',
               code: 'CLI_START_FAILED',
               message:
-                'CLI exited during startup (code 1): Claude Code on Windows requires git-bash (https://git-scm.com/downloads/win).',
+                'Desktop runtime exited during startup (code 1): Windows requires git-bash (https://git-scm.com/downloads/win).',
               timestamp: 1,
             },
           ],
@@ -355,11 +355,58 @@ describe('MessageList nested tool calls', () => {
 
     render(<MessageList />)
 
-    expect(screen.getByText('Failed to start CLI process.')).toBeTruthy()
+    expect(screen.getByText('Failed to start desktop runtime.')).toBeTruthy()
     expect(
       screen.getByText(
-        'CLI exited during startup (code 1): Claude Code on Windows requires git-bash (https://git-scm.com/downloads/win).',
+        'Desktop runtime exited during startup (code 1): Windows requires git-bash (https://git-scm.com/downloads/win).',
       ),
     ).toBeTruthy()
+  })
+
+  it('shows a visible thinking indicator immediately after the user sends a message', () => {
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          chatState: 'thinking',
+          messages: [
+            {
+              id: 'user-1',
+              type: 'user_text',
+              content: '解释这段代码',
+              timestamp: 1,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('Thinking')
+  })
+
+  it('turns invalid model provider errors into a clean user-facing message', () => {
+    useChatStore.setState({
+      sessions: {
+        [ACTIVE_TAB]: makeSessionState({
+          messages: [
+            {
+              id: 'error-invalid-model',
+              type: 'error',
+              code: 'PROVIDER_REQUEST_FAILED',
+              message:
+                'Provider request failed (502): {"error":{"type":"<nil>","message":"上游 API 调用失败: 流式 API 请求失败: 400 Bad Request {\\"message\\":\\"Invalid model. Please select a different model to continue.\\",\\"reason\\":\\"INVALID_MODEL_ID\\"}"}}',
+              timestamp: 1,
+            },
+          ],
+        }),
+      },
+    })
+
+    render(<MessageList />)
+
+    expect(screen.getByText('The selected model is not available. Choose a supported model in Settings and try again.')).toBeTruthy()
+    expect(screen.queryByText(/Provider request failed/)).toBeNull()
+    expect(screen.queryByText(/INVALID_MODEL_ID/)).toBeNull()
   })
 })

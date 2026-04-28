@@ -3,28 +3,27 @@ import type {
   Logger,
 } from '../../vendor/computer-use-mcp/types.js'
 import { format } from 'util'
-import { logForDebugging } from '../debug.js'
 import { COMPUTER_USE_MCP_SERVER_NAME } from './common.js'
-import { createCliExecutor } from './executor.js'
+import { createDesktopExecutor } from './executor.js'
 import { getChicagoEnabled, getChicagoSubGates } from './gates.js'
 import { normalizeOsPermissions } from './permissions.js'
 import { callPythonHelper } from './pythonBridge.js'
 
 class DebugLogger implements Logger {
   silly(message: string, ...args: unknown[]): void {
-    logForDebugging(format(message, ...args), { level: 'debug' })
+    desktopDebug('debug', message, ...args)
   }
   debug(message: string, ...args: unknown[]): void {
-    logForDebugging(format(message, ...args), { level: 'debug' })
+    desktopDebug('debug', message, ...args)
   }
   info(message: string, ...args: unknown[]): void {
-    logForDebugging(format(message, ...args), { level: 'info' })
+    desktopDebug('info', message, ...args)
   }
   warn(message: string, ...args: unknown[]): void {
-    logForDebugging(format(message, ...args), { level: 'warn' })
+    desktopDebug('warn', message, ...args)
   }
   error(message: string, ...args: unknown[]): void {
-    logForDebugging(format(message, ...args), { level: 'error' })
+    desktopDebug('error', message, ...args)
   }
 }
 
@@ -35,7 +34,7 @@ export function getComputerUseHostAdapter(): ComputerUseHostAdapter {
   cached = {
     serverName: COMPUTER_USE_MCP_SERVER_NAME,
     logger: new DebugLogger(),
-    executor: createCliExecutor({
+    executor: createDesktopExecutor({
       getMouseAnimationEnabled: () => getChicagoSubGates().mouseAnimation,
       getHideBeforeActionEnabled: () => getChicagoSubGates().hideBeforeAction,
     }),
@@ -52,4 +51,13 @@ export function getComputerUseHostAdapter(): ComputerUseHostAdapter {
     cropRawPatch: () => null,
   }
   return cached
+}
+
+function desktopDebug(level: 'debug' | 'info' | 'warn' | 'error', message: string, ...args: unknown[]): void {
+  if (!process.env.DEBUG && level === 'debug') return
+  const text = format(message, ...args)
+  const prefix = '[ComputerUse]'
+  if (level === 'error') console.error(prefix, text)
+  else if (level === 'warn') console.warn(prefix, text)
+  else console.log(prefix, text)
 }

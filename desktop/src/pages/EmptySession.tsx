@@ -5,16 +5,22 @@ import { useSessionStore } from '../stores/sessionStore'
 import { useChatStore } from '../stores/chatStore'
 import { useUIStore } from '../stores/uiStore'
 import { useTabStore } from '../stores/tabStore'
+import { useModeStore } from '../stores/modeStore'
+import { useProjectStore } from '../stores/projectStore'
+import { useSettingsStore } from '../stores/settingsStore'
 import { DirectoryPicker } from '../components/shared/DirectoryPicker'
 import { PermissionModeSelector } from '../components/controls/PermissionModeSelector'
 import { ModelSelector } from '../components/controls/ModelSelector'
 import { AttachmentGallery } from '../components/chat/AttachmentGallery'
-import { FileSearchMenu, type FileSearchMenuHandle } from '../components/chat/FileSearchMenu'
+import { FileSearchMenu, type FileSearchMenuAction, type FileSearchMenuHandle } from '../components/chat/FileSearchMenu'
 import {
-  FALLBACK_SLASH_COMMANDS,
+  filterSlashCommands,
+  findAtTrigger,
   findSlashToken,
+  getFallbackSlashCommands,
   insertSlashTrigger,
   mergeSlashCommands,
+  replaceAtToken,
   replaceSlashCommand,
 } from '../components/chat/composerUtils'
 import type { AttachmentRef } from '../types/chat'
@@ -54,6 +60,34 @@ export function EmptySession() {
   const connectToSession = useChatStore((state) => state.connectToSession)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const addToast = useUIStore((state) => state.addToast)
+  const currentMode = useModeStore((state) => state.currentMode)
+  const selectedWorkDir = useProjectStore((state) => state.selectedWorkDir)
+  const locale = useSettingsStore((state) => state.locale)
+  const isChatMode = currentMode === 'chat'
+  const canUseSessionTools = true
+  const canUseProjectTools = currentMode === 'code'
+  const canUseAtMentions = canUseSessionTools
+  const canUseAttachments = canUseSessionTools
+  const canUseSlashCommands = canUseSessionTools
+
+  // 项目选择自动同步到输入框底部的目录
+  useEffect(() => {
+    if (currentMode === 'code' && selectedWorkDir) {
+      setWorkDir(selectedWorkDir)
+    }
+  }, [selectedWorkDir, currentMode])
+
+  // Chat 模式下只保留会话级输入能力，不保留项目目录上下文。
+  useEffect(() => {
+    if (currentMode === 'chat' && workDir) {
+      setWorkDir('')
+    }
+    if (!canUseAtMentions) {
+      setFileSearchOpen(false)
+      setAtFilter('')
+      setAtCursorPos(-1)
+    }
+  }, [canUseAtMentions, currentMode, workDir])
 
   useEffect(() => {
     textareaRef.current?.focus()
@@ -106,6 +140,13 @@ export function EmptySession() {
   useEffect(() => {
     let cancelled = false
 
+    if (!canUseProjectTools) {
+      setSlashCommands([])
+      return () => {
+        cancelled = true
+      }
+    }
+
     skillsApi.list(workDir || undefined)
       .then(({ skills }) => {
         if (cancelled) return
@@ -127,17 +168,25 @@ export function EmptySession() {
     return () => {
       cancelled = true
     }
-  }, [workDir])
+  }, [workDir, canUseProjectTools])
 
   const filteredCommands = useMemo(() => {
-    const source = mergeSlashCommands(slashCommands, FALLBACK_SLASH_COMMANDS)
-    if (!slashFilter) return source
-    const lower = slashFilter.toLowerCase()
-    return source.filter((command) => (
-      command.name.toLowerCase().includes(lower) ||
-      command.description.toLowerCase().includes(lower)
-    ))
-  }, [slashCommands, slashFilter])
+    const fallback = getFallbackSlashCommands(locale, isChatMode ? 'chat' : 'code')
+    const source = mergeSlashCommands(slashCommands, fallback)
+    return filterSlashCommands(source, slashFilter)
+  }, [isChatMode, locale, slashCommands, slashFilter])
+
+  const atActions: FileSearchMenuAction[] = useMemo(() => [
+    {
+      id: 'computer-use',
+      label: 'Computer Use',
+      description: locale === 'zh'
+        ? '控制本机应用、屏幕、键盘和鼠标'
+        : 'Control local apps, screen, keyboard, and mouse',
+      insertText: 'Computer Use',
+      aliases: ['computer', 'use', 'desktop', '电脑', '桌面', '控制', '应用'],
+    },
+  ], [locale])
 
   useEffect(() => {
     setSlashSelectedIndex(0)
@@ -151,22 +200,25 @@ export function EmptySession() {
   }, [slashMenuOpen, slashSelectedIndex])
 
   const handleSubmit = async () => {
-    const text = input.trim()
-    if ((!text && attachments.length === 0) || isSubmitting) return
+    const hasText = input.trim().length > 0
+    if ((!hasText && (!canUseAttachments || attachments.length === 0)) || isSubmitting) return
 
     setIsSubmitting(true)
     try {
-      const sessionId = await createSession(workDir || undefined)
+      const effectiveWorkDir = currentMode === 'chat' ? undefined : (workDir || undefined)
+      const sessionId = await createSession(effectiveWorkDir, currentMode)
       setActiveView('code')
       useTabStore.getState().openTab(sessionId, 'New Session')
       connectToSession(sessionId)
-      const attachmentPayload: AttachmentRef[] = attachments.map((attachment) => ({
-        type: attachment.type,
-        name: attachment.name,
-        data: attachment.data,
-        mimeType: attachment.mimeType,
-      }))
-      sendMessage(sessionId, text, attachmentPayload)
+      const attachmentPayload: AttachmentRef[] = canUseAttachments
+        ? attachments.map((attachment) => ({
+            type: attachment.type,
+            name: attachment.name,
+            data: attachment.data,
+            mimeType: attachment.mimeType,
+          }))
+        : []
+      sendMessage(sessionId, input, attachmentPayload)
       setInput('')
       setAttachments([])
     } catch (error) {
@@ -181,36 +233,33 @@ export function EmptySession() {
 
   const handleInputChange = (value: string, cursorPos: number) => {
     setInput(value)
-    const token = findSlashToken(value, cursorPos)
-    if (!token) {
+
+    if (!canUseSlashCommands) {
       setSlashMenuOpen(false)
     } else {
-      setSlashFilter(token.filter)
-      setSlashMenuOpen(true)
+      const token = findSlashToken(value, cursorPos)
+      if (!token) {
+        setSlashMenuOpen(false)
+      } else {
+        setSlashFilter(token.filter)
+        setSlashMenuOpen(true)
+      }
     }
 
-    // Detect @ trigger for file search
-    const textBeforeCursor = value.slice(0, cursorPos)
-    let pos = -1
-    for (let i = textBeforeCursor.length - 1; i >= 0; i--) {
-      const ch = textBeforeCursor[i]!
-      if (ch === '@') {
-        if (i === 0 || /\s/.test(textBeforeCursor[i - 1]!)) {
-          pos = i
-          break
-        }
-        break
-      }
-      if (/\s/.test(ch)) {
-        break
-      }
+    if (!canUseAtMentions) {
+      setFileSearchOpen(false)
+      setAtFilter('')
+      setAtCursorPos(-1)
+      return
     }
-    if (pos < 0) {
+
+    const token = findAtTrigger(value, cursorPos)
+    if (!token) {
       setFileSearchOpen(false)
       setAtFilter('')
       setAtCursorPos(-1)
     } else {
-      setAtFilter(textBeforeCursor.slice(pos + 1))
+      setAtFilter(token.filter)
       setAtCursorPos(cursorPos)
       setSlashMenuOpen(false)
       setFileSearchOpen(true)
@@ -269,6 +318,7 @@ export function EmptySession() {
   }
 
   const handlePaste = (event: React.ClipboardEvent) => {
+    if (!canUseAttachments) return
     const items = event.clipboardData?.items
     if (!items) return
 
@@ -303,6 +353,7 @@ export function EmptySession() {
   }
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canUseAttachments) return
     const files = event.target.files
     if (!files) return
 
@@ -331,6 +382,7 @@ export function EmptySession() {
 
   const handleDrop = (event: React.DragEvent) => {
     event.preventDefault()
+    if (!canUseAttachments) return
     const files = event.dataTransfer.files
     if (files.length > 0) {
       const fakeEvent = { target: { files } } as React.ChangeEvent<HTMLInputElement>
@@ -357,6 +409,7 @@ export function EmptySession() {
   }
 
   const insertSlashCommand = () => {
+    if (!canUseSlashCommands) return
     const el = textareaRef.current
     const cursorPos = el?.selectionStart ?? input.length
     const replacement = insertSlashTrigger(input, cursorPos)
@@ -374,7 +427,7 @@ export function EmptySession() {
     <div className="relative flex flex-1 flex-col overflow-hidden bg-[var(--color-surface)]">
       <div className="flex flex-1 flex-col items-center justify-center p-8 pb-32">
         <div className="flex max-w-md flex-col items-center text-center">
-          <img src="/app-icon.jpg" alt="Claude Code Haha" className="mb-6 h-24 w-24 rounded-[22px]" style={{ boxShadow: 'var(--shadow-dropdown)' }} />
+          <img src="/app-icon.jpg" alt="Ycode" className="mb-6 h-24 w-24 rounded-[22px]" style={{ boxShadow: 'var(--shadow-dropdown)' }} />
           <h1 className="mb-2 text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)]" style={{ fontFamily: 'var(--font-headline)' }}>
             {t('empty.title')}
           </h1>
@@ -391,29 +444,31 @@ export function EmptySession() {
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleDrop}
           >
-            {fileSearchOpen && (
+            {canUseAtMentions && fileSearchOpen && (
               <FileSearchMenu
                 ref={fileSearchRef}
                 cwd={workDir || ''}
+                enableFileSearch={canUseProjectTools}
+                actions={atActions}
                 filter={atFilter}
                 onSelect={(_path, name) => {
                   if (atCursorPos >= 0) {
-                    const newValue = `${input.slice(0, atCursorPos)}${name}${input.slice(atCursorPos)}`
-                    const newCursorPos = atCursorPos + name.length
-                    setInput(newValue)
+                    const replacement = replaceAtToken(input, atCursorPos, name)
+                    if (!replacement) return
+                    setInput(replacement.value)
                     setFileSearchOpen(false)
                     setAtFilter('')
                     setAtCursorPos(-1)
                     void textareaRef.current?.focus()
                     requestAnimationFrame(() => {
-                      textareaRef.current?.setSelectionRange(newCursorPos, newCursorPos)
+                      textareaRef.current?.setSelectionRange(replacement.cursorPos, replacement.cursorPos)
                     })
                   }
                 }}
               />
             )}
 
-            {slashMenuOpen && filteredCommands.length > 0 && (
+            {canUseSlashCommands && slashMenuOpen && filteredCommands.length > 0 && (
               <div
                 ref={slashMenuRef}
                 className="absolute bottom-full left-0 right-0 z-50 mb-2 overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] shadow-[var(--shadow-dropdown)]"
@@ -437,7 +492,7 @@ export function EmptySession() {
               </div>
             )}
 
-            {attachments.length > 0 && (
+            {canUseAttachments && attachments.length > 0 && (
               <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
             )}
 
@@ -457,62 +512,70 @@ export function EmptySession() {
 
             <div className="flex items-center justify-between border-t border-[var(--color-border-separator)] pt-3">
               <div className="flex items-center gap-2">
-                <div ref={plusMenuRef} className="relative">
-                  <button
-                    onClick={() => setPlusMenuOpen((prev) => !prev)}
-                    aria-label="Open composer tools"
-                    className="rounded-lg p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)]"
-                  >
-                    <span className="material-symbols-outlined text-[18px]">add</span>
-                  </button>
+                {canUseSessionTools && (
+                  <>
+                    <div ref={plusMenuRef} className="relative">
+                      <button
+                        onClick={() => setPlusMenuOpen((prev) => !prev)}
+                        aria-label="Open composer tools"
+                        className="rounded-lg p-1.5 text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+                      >
+                        <span className="material-symbols-outlined text-[18px]">add</span>
+                      </button>
 
-                  {plusMenuOpen && (
-                    <div className="absolute bottom-full left-0 mb-2 w-[240px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1 shadow-[var(--shadow-dropdown)]">
-                      <button
-                        onClick={() => {
-                          fileInputRef.current?.click()
-                          setPlusMenuOpen(false)
-                        }}
-                        className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
-                      >
-                        <span className="material-symbols-outlined text-[18px] text-[var(--color-text-secondary)]">attach_file</span>
-                        {t('empty.addFiles')}
-                      </button>
-                      <button
-                        onClick={insertSlashCommand}
-                        className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
-                      >
-                        <span className="w-5 text-center text-[18px] font-bold text-[var(--color-text-secondary)]">/</span>
-                        {t('empty.slashCommands')}
-                      </button>
+                      {plusMenuOpen && (
+                        <div className="absolute bottom-full left-0 mb-2 w-[240px] rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-lowest)] py-1 shadow-[var(--shadow-dropdown)]">
+                          <button
+                            onClick={() => {
+                              fileInputRef.current?.click()
+                              setPlusMenuOpen(false)
+                            }}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+                          >
+                            <span className="material-symbols-outlined text-[18px] text-[var(--color-text-secondary)]">attach_file</span>
+                            {t('empty.addFiles')}
+                          </button>
+                          <button
+                            onClick={insertSlashCommand}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-hover)]"
+                          >
+                            <span className="w-5 text-center text-[18px] font-bold text-[var(--color-text-secondary)]">/</span>
+                            {t('empty.slashCommands')}
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
 
-                <PermissionModeSelector workDir={workDir} />
+                    <PermissionModeSelector workDir={workDir} />
+                  </>
+                )}
               </div>
 
               <div className="flex items-center gap-3">
                 <ModelSelector />
                 <button
                   onClick={handleSubmit}
-                  disabled={(!input.trim() && attachments.length === 0) || isSubmitting}
+                  disabled={(!input.trim() && (!canUseAttachments || attachments.length === 0)) || isSubmitting}
                   className="flex w-[112px] items-center justify-center gap-1 rounded-lg bg-[image:var(--gradient-btn-primary)] px-3 py-1.5 text-xs font-semibold text-[var(--color-btn-primary-fg)] shadow-[var(--shadow-button-primary)] transition-all hover:brightness-105 disabled:opacity-30"
                 >
-                  {t('common.run')}
+                  {isChatMode ? t('common.send') : t('common.run')}
                   <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
                 </button>
               </div>
             </div>
           </div>
 
-          <div>
-            <DirectoryPicker value={workDir} onChange={setWorkDir} />
-          </div>
+          {canUseProjectTools && (
+            <div>
+              <DirectoryPicker value={workDir} onChange={setWorkDir} />
+            </div>
+          )}
         </div>
       </div>
 
-      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+      {canUseAttachments && (
+        <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+      )}
     </div>
   )
 }

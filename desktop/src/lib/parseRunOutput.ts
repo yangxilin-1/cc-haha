@@ -8,7 +8,7 @@
  *    This is plain text / markdown that should be returned as-is.
  *
  * 2. **Raw NDJSON** (old runs before the server-side extraction was added) —
- *    Each line is a JSON object from the CLI's stream-json output. We parse
+ *    Each line is a JSON object from the legacy runtime stream output. We parse
  *    these and extract assistant text blocks + result messages.
  *
  * Detection: if at least one line parses as JSON with a recognized `type`

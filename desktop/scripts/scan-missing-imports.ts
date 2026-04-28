@@ -1,8 +1,9 @@
 /**
  * scan-missing-imports.ts
  *
- * 在编译 sidecar 之前，扫描 src/ 里所有相对路径的 import / require / 类型 import
- * specifier，找出磁盘上不存在的目标，给它们生成最小 stub 文件。
+ * 在编译 sidecar 之前，从桌面 sidecar 入口出发扫描可达源码里的相对
+ * import / require / 类型 import specifier，找出磁盘上不存在的目标，
+ * 给它们生成最小 stub 文件。
  *
  * 为什么需要：本 fork 的 src/ 大量使用 ant-internal 的 feature() macro 配
  * dynamic require/import，gating 一堆只在 Anthropic 内部 build 才存在的源文件。
@@ -17,13 +18,15 @@
  * 安全地覆写它们而不会动到真实代码。
  */
 
-import { readdir, stat, readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 const repoRoot = path.resolve(import.meta.dir, '../..')
 const srcRoot = path.join(repoRoot, 'src')
 const adaptersRoot = path.join(repoRoot, 'adapters')
+const desktopSrcRoot = path.join(repoRoot, 'desktop', 'src')
+const sidecarEntry = path.join(repoRoot, 'desktop', 'sidecars', 'ycode-sidecar.ts')
 
 // 扫描 + 创建 stub 时允许的根目录。stub 写到这些目录之外会被拒绝，
 // 防止意外往 node_modules / 系统路径写文件。
@@ -78,37 +81,27 @@ const JSON_EXTS = new Set(['.json', '.json5'])
 
 const IMPORT_PATTERNS = [
   // import X from './foo'
-  /from\s+['"](\.[^'"]+)['"]/g,
+  /(?:import|export)\s+(?!type\b)[^'"]*?\s+from\s+['"]([^'"]+)['"]/g,
   // import('./foo')
-  /import\s*\(\s*['"](\.[^'"]+)['"]/g,
+  /import\s*\(\s*['"]([^'"]+)['"]/g,
   // require('./foo')
-  /require\s*\(\s*['"](\.[^'"]+)['"]/g,
+  /require\s*\(\s*['"]([^'"]+)['"]/g,
   // import './foo' (side-effect only)
-  /import\s+['"](\.[^'"]+)['"]/g,
-  // typeof import('./foo')
-  /typeof\s+import\s*\(\s*['"](\.[^'"]+)['"]/g,
+  /import\s+['"]([^'"]+)['"]/g,
 ]
 
 const SOURCE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'])
 
-async function* walk(dir: string): AsyncGenerator<string> {
-  const entries = await readdir(dir, { withFileTypes: true })
-  for (const entry of entries) {
-    if (entry.name.startsWith('.')) continue
-    if (entry.name === 'node_modules') continue
-    if (entry.name === '__tests__') continue
-    const full = path.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      yield* walk(full)
-    } else if (entry.isFile() && SOURCE_EXT.has(path.extname(entry.name))) {
-      yield full
-    }
-  }
+function resolveBase(importer: string, spec: string): string | null {
+  if (spec.startsWith('.')) return path.resolve(path.dirname(importer), spec)
+  if (spec.startsWith('src/')) return path.resolve(repoRoot, spec)
+  if (spec.startsWith('@/')) return path.resolve(desktopSrcRoot, spec.slice(2))
+  return null
 }
 
 function resolveCandidates(importer: string, spec: string): string[] {
-  const importerDir = path.dirname(importer)
-  const base = path.resolve(importerDir, spec)
+  const base = resolveBase(importer, spec)
+  if (!base) return []
   return [
     base,
     base + '.ts',
@@ -127,9 +120,16 @@ function resolveCandidates(importer: string, spec: string): string[] {
   ]
 }
 
+function resolveImport(importer: string, spec: string): string | null {
+  for (const candidate of resolveCandidates(importer, spec)) {
+    if (existsSync(candidate)) return candidate
+  }
+  return null
+}
+
 function pickStubPath(importer: string, spec: string): string {
-  const importerDir = path.dirname(importer)
-  const base = path.resolve(importerDir, spec)
+  const base = resolveBase(importer, spec)
+  if (!base) return ''
   // 把 .js 还原成 .ts —— TS 源里写 .js 是 ESM-on-Node 的惯例
   if (base.endsWith('.js')) return base.slice(0, -3) + '.ts'
   if (base.endsWith('.jsx')) return base.slice(0, -4) + '.tsx'
@@ -148,19 +148,26 @@ function pickStubContent(stubPath: string): { content: string; marker: string } 
   return { content: TS_STUB_CONTENT, marker: STUB_MARKER_TS }
 }
 
-async function* walkRoots(roots: string[]): AsyncGenerator<string> {
-  for (const root of roots) {
-    if (!existsSync(root)) continue
-    yield* walk(root)
-  }
+function isScannableSource(file: string): boolean {
+  if (!SOURCE_EXT.has(path.extname(file))) return false
+  if (file.includes(`${path.sep}node_modules${path.sep}`)) return false
+  if (file.includes(`${path.sep}__tests__${path.sep}`)) return false
+  return true
 }
 
 async function main() {
   const missing = new Map<string, Set<string>>() // stubPath → set of importers
   let scannedFiles = 0
+  const seen = new Set<string>()
+  const queue = [sidecarEntry]
 
-  for await (const file of walkRoots([srcRoot, adaptersRoot])) {
+  while (queue.length > 0) {
+    const file = path.resolve(queue.shift()!)
+    if (seen.has(file)) continue
+    seen.add(file)
+    if (!isScannableSource(file)) continue
     scannedFiles++
+
     let contents: string
     try {
       contents = await readFile(file, 'utf8')
@@ -173,24 +180,21 @@ async function main() {
       let match: RegExpExecArray | null
       while ((match = pattern.exec(contents)) !== null) {
         const spec = match[1]!
-        if (!spec.startsWith('.')) continue
-        const candidates = resolveCandidates(file, spec)
-        let exists = false
-        for (const c of candidates) {
-          if (existsSync(c)) {
-            exists = true
-            break
-          }
+        if (!spec.startsWith('.') && !spec.startsWith('src/') && !spec.startsWith('@/')) continue
+        const resolved = resolveImport(file, spec)
+        if (resolved) {
+          if (isScannableSource(resolved)) queue.push(resolved)
+          continue
         }
-        if (exists) continue
         const stubPath = pickStubPath(file, spec)
+        if (!stubPath) continue
         if (!missing.has(stubPath)) missing.set(stubPath, new Set())
         missing.get(stubPath)!.add(path.relative(repoRoot, file))
       }
     }
   }
 
-  console.log(`[scan] scanned ${scannedFiles} source files`)
+  console.log(`[scan] scanned ${scannedFiles} desktop-reachable source files`)
   console.log(`[scan] missing ${missing.size} stub targets`)
 
   let createdCount = 0

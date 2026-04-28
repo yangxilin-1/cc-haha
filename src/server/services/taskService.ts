@@ -1,13 +1,13 @@
 /**
- * TaskService — CLI Task V2 的读取与查询
+ * TaskService — Ycode Desktop runtime task storage.
  *
- * 任务信息存储在 ~/.claude/tasks/<task_list_id>/ 目录下，每个任务一个 JSON 文件。
- * Task list ID 可以是 session ID、team name 等。
+ * Tasks are stored under the Ycode desktop data directory:
+ *   <YCODE_DATA_DIR or app data>/tasks/<task_list_id>/*.json
  */
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import * as os from 'os'
+import { getAppDataDir } from '../utils/paths.js'
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed'
 
@@ -34,11 +34,15 @@ export type TaskListSummary = {
 
 export class TaskService {
   private getConfigDir(): string {
-    return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    return process.env.YCODE_DATA_DIR || getAppDataDir()
   }
 
   private getTasksDir(): string {
     return path.join(this.getConfigDir(), 'tasks')
+  }
+
+  private sanitizeTaskListId(taskListId: string): string {
+    return taskListId.replace(/[^a-zA-Z0-9_-]/g, '-')
   }
 
   /** 列出所有 task list (目录) */
@@ -71,7 +75,8 @@ export class TaskService {
 
   /** 获取指定 task list 的所有任务 */
   async getTasksForList(taskListId: string): Promise<TaskInfo[]> {
-    const listDir = path.join(this.getTasksDir(), taskListId)
+    const safeTaskListId = this.sanitizeTaskListId(taskListId)
+    const listDir = path.join(this.getTasksDir(), safeTaskListId)
     try {
       const entries = await fs.readdir(listDir)
       const tasks: TaskInfo[] = []
@@ -81,7 +86,7 @@ export class TaskService {
         try {
           const raw = await fs.readFile(path.join(listDir, filename), 'utf-8')
           const data = JSON.parse(raw)
-          const task = this.parseTaskFile(data, taskListId)
+          const task = this.parseTaskFile(data, safeTaskListId)
           if (task) tasks.push(task)
         } catch {
           // skip unparseable files
@@ -118,7 +123,25 @@ export class TaskService {
     return tasks.find((t) => t.id === taskId) || null
   }
 
-  /** 解析单个任务文件 — 匹配 CLI V2 Task 格式 */
+  /** Clear persisted tasks for a completed task list. */
+  async resetTaskList(taskListId: string): Promise<void> {
+    const listDir = path.join(this.getTasksDir(), this.sanitizeTaskListId(taskListId))
+    let entries: string[]
+    try {
+      entries = await fs.readdir(listDir)
+    } catch (err: any) {
+      if (err.code === 'ENOENT') return
+      throw err
+    }
+
+    await Promise.all(
+      entries
+        .filter((filename) => filename.endsWith('.json') && !filename.startsWith('.'))
+        .map((filename) => fs.rm(path.join(listDir, filename), { force: true })),
+    )
+  }
+
+  /** 解析单个任务文件 — Ycode Desktop task JSON */
   private parseTaskFile(data: any, taskListId: string): TaskInfo | null {
     if (!data || typeof data !== 'object') return null
     if (!data.id || !data.subject) return null

@@ -9,6 +9,7 @@ describe('resolveStoredComputerUseConfig', () => {
     expect(resolveStoredComputerUseConfig()).toEqual({
       authorizedApps: [],
       grantFlags: DEFAULT_DESKTOP_GRANT_FLAGS,
+      computerWideAccess: false,
     })
   })
 
@@ -26,7 +27,31 @@ describe('resolveStoredComputerUseConfig', () => {
         clipboardWrite: true,
         systemKeyCombos: true,
       },
+      computerWideAccess: false,
     })
   })
-})
 
+  test('preserves computer-wide access setting', () => {
+    expect(
+      resolveStoredComputerUseConfig({
+        computerWideAccess: true,
+      }).computerWideAccess,
+    ).toBe(true)
+  })
+
+  test('deduplicates authorized apps case-insensitively', () => {
+    expect(
+      resolveStoredComputerUseConfig({
+        authorizedApps: [
+          { bundleId: 'Qoder', displayName: 'Qoder' },
+          { bundleId: 'qoder', displayName: 'qoder' },
+          { bundleId: 'QQMusic', displayName: 'QQMusic' },
+          { bundleId: 'qqmusic', displayName: 'QQ音乐' },
+        ],
+      }).authorizedApps,
+    ).toEqual([
+      { bundleId: 'Qoder', displayName: 'Qoder' },
+      { bundleId: 'QQMusic', displayName: 'QQMusic' },
+    ])
+  })
+})

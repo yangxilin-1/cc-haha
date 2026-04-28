@@ -21,7 +21,7 @@ vi.mock('../components/chat/SessionTaskBar', () => ({
 
 import { ActiveSession } from './ActiveSession'
 import { useChatStore } from '../stores/chatStore'
-import { useCLITaskStore } from '../stores/cliTaskStore'
+import { useDesktopTaskStore } from '../stores/desktopTaskStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useTabStore } from '../stores/tabStore'
 import { useTeamStore } from '../stores/teamStore'
@@ -35,14 +35,14 @@ afterEach(() => {
 })
 
 describe('ActiveSession task polling', () => {
-  it('refreshes CLI tasks repeatedly while a turn is active', async () => {
+  it('refreshes desktop tasks repeatedly while a turn is active', async () => {
     vi.useFakeTimers()
 
     const sessionId = 'polling-session'
-    const originalCliTaskState = useCLITaskStore.getState()
+    const originalDesktopTaskState = useDesktopTaskStore.getState()
     const fetchSessionTasks = vi.fn().mockResolvedValue(undefined)
 
-    useCLITaskStore.setState({
+    useDesktopTaskStore.setState({
       sessionId,
       tasks: [],
       fetchSessionTasks,
@@ -103,15 +103,15 @@ describe('ActiveSession task polling', () => {
     ).toHaveLength(4)
 
     unmount()
-    useCLITaskStore.setState(originalCliTaskState)
+    useDesktopTaskStore.setState(originalDesktopTaskState)
   })
 
   it('keeps member sessions interactive and skips leader task polling', () => {
     const memberSessionId = 'team-member:security-reviewer@test-team'
-    const originalCliTaskState = useCLITaskStore.getState()
+    const originalDesktopTaskState = useDesktopTaskStore.getState()
     const fetchSessionTasks = vi.fn().mockResolvedValue(undefined)
 
-    useCLITaskStore.setState({
+    useDesktopTaskStore.setState({
       sessionId: null,
       tasks: [],
       fetchSessionTasks,
@@ -176,6 +176,6 @@ describe('ActiveSession task polling', () => {
     expect(fetchSessionTasks).not.toHaveBeenCalled()
 
     unmount()
-    useCLITaskStore.setState(originalCliTaskState)
+    useDesktopTaskStore.setState(originalDesktopTaskState)
   })
 })

@@ -14,7 +14,7 @@
 
 ### [架构设计](./02-architecture.md)
 
-面向开发者的技术架构：三层架构（Tauri → Server → CLI）、WebSocket 协议、HTTP API、状态管理、协议代理、适配器桥接、目录结构。
+面向开发者的技术架构：原生桌面 runtime（Tauri → Desktop Server → Chat/Code Engine）、WebSocket 协议、HTTP API、状态管理、协议代理、适配器桥接、目录结构。
 
 ### [功能详解](./03-features.md)
 
@@ -23,6 +23,10 @@
 ### [安装指南](./04-installation.md)
 
 下载安装、macOS/Windows 常见问题、Web UI 模式。
+
+### [原生桌面端 Runtime 演进方案](./05-native-runtime-roadmap.md)
+
+面向后端重构的架构决策：彻底摆脱 CLI 运行依赖，只借鉴 CLI 的 agent 思想，建设 Ycode Desktop 自己的 Conversation Engine、Provider Adapter、Tool Runtime、Permission Runtime 和桌面端会话存储。
 
 ---
 
@@ -36,11 +40,12 @@
 
 ### 开发者
 
-1. 阅读 [架构设计](./02-architecture.md) 理解三层架构
-2. 关键源码位置：
+1. 阅读 [架构设计](./02-architecture.md) 理解当前实现
+2. 阅读 [原生桌面端 Runtime 演进方案](./05-native-runtime-roadmap.md) 理解目标架构和去 CLI 化路线
+3. 关键源码位置：
    - `desktop/src/` — React 前端
    - `desktop/src-tauri/` — Tauri Rust 后端
-   - `desktop/sidecars/` — Sidecar 入口
+   - `desktop/sidecars/` — 桌面后台服务入口
    - `src/server/` — Express API 服务端
    - `adapters/` — IM 适配器
 
@@ -51,9 +56,9 @@
 | 概念 | 说明 |
 |------|------|
 | **Tauri** | 跨平台桌面框架，Rust 管理窗口和 Sidecar 进程 |
-| **Sidecar** | 随主进程启动的后台服务，运行 API 服务器 |
+| **Sidecar** | 随主进程启动的后台服务，运行 Desktop Server 和可选适配器 |
 | **Session** | 一次对话会话，绑定工作目录，通过 WebSocket 通信 |
 | **Tab** | 标签页，对应一个 Session 或特殊页面 |
 | **Provider** | AI 模型提供商，支持 Anthropic/OpenAI 兼容接口 |
-| **Adapter** | IM 适配器，Telegram/飞书接入 Claude Code |
+| **Adapter** | IM 适配器，Telegram/飞书接入 Ycode Desktop runtime |
 | **Store** | Zustand 状态容器，按领域拆分管理 |

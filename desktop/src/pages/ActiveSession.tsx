@@ -1,8 +1,8 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect } from 'react'
 import { useTabStore } from '../stores/tabStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useChatStore } from '../stores/chatStore'
-import { useCLITaskStore } from '../stores/cliTaskStore'
+import { useDesktopTaskStore } from '../stores/desktopTaskStore'
 import { useTeamStore } from '../stores/teamStore'
 import { useTranslation } from '../i18n'
 import { MessageList } from '../components/chat/MessageList'
@@ -13,47 +13,51 @@ import { SessionTaskBar } from '../components/chat/SessionTaskBar'
 
 const TASK_POLL_INTERVAL_MS = 1000
 
-export function ActiveSession() {
+type ActiveSessionProps = {
+  sessionId?: string
+}
+
+export function ActiveSession({ sessionId }: ActiveSessionProps = {}) {
   const activeTabId = useTabStore((s) => s.activeTabId)
+  const currentSessionId = sessionId ?? activeTabId
   const sessions = useSessionStore((s) => s.sessions)
   const connectToSession = useChatStore((s) => s.connectToSession)
-  const sessionState = useChatStore((s) => activeTabId ? s.sessions[activeTabId] : undefined)
+  const sessionState = useChatStore((s) => currentSessionId ? s.sessions[currentSessionId] : undefined)
   const pendingComputerUsePermission = sessionState?.pendingComputerUsePermission ?? null
-  const fetchSessionTasks = useCLITaskStore((s) => s.fetchSessionTasks)
-  const trackedTaskSessionId = useCLITaskStore((s) => s.sessionId)
-  const hasIncompleteTasks = useCLITaskStore((s) => s.tasks.some((task) => task.status !== 'completed'))
+  const fetchSessionTasks = useDesktopTaskStore((s) => s.fetchSessionTasks)
+  const trackedTaskSessionId = useDesktopTaskStore((s) => s.sessionId)
+  const hasIncompleteTasks = useDesktopTaskStore((s) => s.tasks.some((task) => task.status !== 'completed'))
   const chatState = sessionState?.chatState ?? 'idle'
-  const tokenUsage = sessionState?.tokenUsage ?? { input_tokens: 0, output_tokens: 0 }
 
-  const session = sessions.find((s) => s.id === activeTabId)
-  const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
+  const session = sessions.find((s) => s.id === currentSessionId)
+  const memberInfo = useTeamStore((s) => currentSessionId ? s.getMemberBySessionId(currentSessionId) : null)
   const activeTeam = useTeamStore((s) => s.activeTeam)
   const isMemberSession = !!memberInfo
 
   useEffect(() => {
-    if (activeTabId && !isMemberSession) {
-      connectToSession(activeTabId)
+    if (currentSessionId && !isMemberSession) {
+      connectToSession(currentSessionId)
     }
-  }, [activeTabId, isMemberSession, connectToSession])
+  }, [currentSessionId, isMemberSession, connectToSession])
 
   useEffect(() => {
-    if (!activeTabId || isMemberSession) return
+    if (!currentSessionId || isMemberSession) return
 
     const shouldPollTasks =
       chatState !== 'idle' ||
-      (trackedTaskSessionId === activeTabId && hasIncompleteTasks)
+      (trackedTaskSessionId === currentSessionId && hasIncompleteTasks)
 
     if (!shouldPollTasks) return
 
-    void fetchSessionTasks(activeTabId)
+    void fetchSessionTasks(currentSessionId)
 
     const timer = setInterval(() => {
-      void fetchSessionTasks(activeTabId)
+      void fetchSessionTasks(currentSessionId)
     }, TASK_POLL_INTERVAL_MS)
 
     return () => clearInterval(timer)
   }, [
-    activeTabId,
+    currentSessionId,
     isMemberSession,
     chatState,
     trackedTaskSessionId,
@@ -64,24 +68,12 @@ export function ActiveSession() {
   const t = useTranslation()
   const messages = sessionState?.messages ?? []
   const streamingText = sessionState?.streamingText ?? ''
-  const isEmpty = messages.length === 0 && !streamingText
+  const isEmpty = messages.length === 0 && !streamingText && chatState === 'idle'
 
-  const isActive = chatState !== 'idle'
-  const totalTokens = tokenUsage.input_tokens + tokenUsage.output_tokens
-
-  const lastUpdated = useMemo(() => {
-    if (!session?.modifiedAt) return ''
-    const diff = Date.now() - new Date(session.modifiedAt).getTime()
-    if (diff < 60000) return t('session.timeJustNow')
-    if (diff < 3600000) return t('session.timeMinutes', { n: Math.floor(diff / 60000) })
-    if (diff < 86400000) return t('session.timeHours', { n: Math.floor(diff / 3600000) })
-    return t('session.timeDays', { n: Math.floor(diff / 86400000) })
-  }, [session?.modifiedAt, t])
-
-  if (!activeTabId) return null
+  if (!currentSessionId) return null
 
   return (
-    <div className="flex-1 flex flex-col relative overflow-hidden bg-background text-on-surface">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background text-on-surface">
       {isMemberSession && (
         <div className="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-surface-container)]">
           <div className="mx-auto max-w-[860px] flex items-center justify-between gap-4 px-8 py-2">
@@ -141,7 +133,7 @@ export function ActiveSession() {
               </>
             ) : (
               <>
-                <img src="/app-icon.jpg" alt="Claude Code Haha" className="mb-6 h-24 w-24 rounded-[22px]" style={{ boxShadow: 'var(--shadow-dropdown)' }} />
+                <img src="/app-icon.jpg" alt="Ycode" className="mb-6 h-24 w-24 rounded-[22px]" style={{ boxShadow: 'var(--shadow-dropdown)' }} />
                 <h1 className="mb-2 text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)]" style={{ fontFamily: 'var(--font-headline)' }}>
                   {t('empty.title')}
                 </h1>
@@ -154,50 +146,14 @@ export function ActiveSession() {
         </div>
       ) : (
         <>
-          {!isMemberSession && (
-            <div className="mx-auto flex w-full max-w-[860px] items-center border-b border-outline-variant/10 px-8 py-3">
-              <div className="flex-1">
-                <h1 className="text-lg font-bold font-headline text-on-surface leading-tight">
-                  {session?.title || t('session.untitled')}
-                </h1>
-                <div className="flex items-center gap-2 text-[10px] text-outline font-medium mt-1">
-                  {isActive && (
-                    <span className="flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] animate-pulse-dot" />
-                      {t('session.active')}
-                    </span>
-                  )}
-                  {totalTokens > 0 && (
-                    <>
-                      <span className="text-[var(--color-outline)]">·</span>
-                      <span>{totalTokens.toLocaleString()} t</span>
-                    </>
-                  )}
-                  {lastUpdated && (
-                    <>
-                      <span className="text-[var(--color-outline)]">·</span>
-                      <span>{t('session.lastUpdated', { time: lastUpdated })}</span>
-                    </>
-                  )}
-                  {session?.messageCount !== undefined && session.messageCount > 0 && (
-                    <>
-                      <span className="text-[var(--color-outline)]">·</span>
-                      <span>{t('session.messages', { count: session.messageCount })}</span>
-                    </>
-                  )}
-                </div>
-                {session?.workDirExists === false && (
-                  <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--color-error)]/20 bg-[var(--color-error)]/8 px-3 py-1.5 text-[11px] text-[var(--color-error)]">
-                    <span className="material-symbols-outlined text-[14px]">warning</span>
-                    <span className="truncate">
-                      {t('session.workspaceUnavailable', { dir: session.workDir || 'directory no longer exists' })}
-                    </span>
-                  </div>
-                )}
-              </div>
+          {!isMemberSession && session?.mode !== 'chat' && session?.workDirExists === false && (
+            <div className="mx-auto mt-3 flex w-full max-w-[860px] items-center gap-2 rounded-lg border border-[var(--color-error)]/20 px-3 py-1.5 text-[11px] text-[var(--color-error)]">
+              <span className="material-symbols-outlined text-[14px]">warning</span>
+              <span className="truncate">
+                {t('session.workspaceUnavailable', { dir: session.workDir || 'directory no longer exists' })}
+              </span>
             </div>
           )}
-
           <MessageList />
         </>
       )}
@@ -206,11 +162,11 @@ export function ActiveSession() {
 
       <TeamStatusBar />
 
-      <ChatInput variant={isEmpty && !isMemberSession ? 'hero' : 'default'} />
+      <ChatInput variant={isEmpty && !isMemberSession ? 'hero' : 'default'} mode={session?.mode ?? 'code'} />
 
-      {!isMemberSession && activeTabId ? (
+      {!isMemberSession && currentSessionId ? (
         <ComputerUsePermissionModal
-          sessionId={activeTabId}
+          sessionId={currentSessionId}
           request={pendingComputerUsePermission?.request ?? null}
         />
       ) : null}

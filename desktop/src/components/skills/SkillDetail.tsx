@@ -4,6 +4,7 @@ import { useTranslation } from '../../i18n'
 import { MarkdownRenderer } from '../markdown/MarkdownRenderer'
 import { CodeViewer } from '../chat/CodeViewer'
 import type { FileTreeNode, SkillFrontmatter } from '../../types/skill'
+import { FolderLineIcon } from '../shared/LineIcons'
 
 const META_PRIORITY = [
   'description',
@@ -88,7 +89,7 @@ export function SkillDetail() {
             <DetailStat
               label={t('settings.skills.summary.totalFiles')}
               value={String(files.length)}
-              icon="folder_open"
+              icon={<FolderLineIcon size={14} />}
             />
             <DetailStat
               label={t('settings.skills.summary.tokens')}
@@ -270,8 +271,6 @@ function TreeItem({
   const isSelected = node.path === selectedPath
   const isDir = node.type === 'directory'
 
-  const icon = isDir ? (expanded ? 'folder_open' : 'folder') : fileIcon(node.name)
-
   return (
     <div>
       <button
@@ -290,9 +289,13 @@ function TreeItem({
         ) : (
           <span style={{ width: 12 }} />
         )}
-        <span className="material-symbols-outlined text-[14px] text-[var(--color-text-tertiary)]">
-          {icon}
-        </span>
+        {isDir ? (
+          <FolderLineIcon size={14} className="text-[var(--color-text-tertiary)]" />
+        ) : (
+          <span className="material-symbols-outlined text-[14px] text-[var(--color-text-tertiary)]">
+            {fileIcon(node.name)}
+          </span>
+        )}
         <span className="truncate">{node.name}</span>
       </button>
 
@@ -315,12 +318,12 @@ function DetailStat({
 }: {
   label: string
   value: string
-  icon: string
+  icon: ReactNode
 }) {
   return (
     <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-3">
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-[var(--color-text-tertiary)]">
-        <span className="material-symbols-outlined text-[14px]">{icon}</span>
+        <InlineIcon icon={icon} size={14} />
         <span>{label}</span>
       </div>
       <div className="mt-2 text-base font-semibold text-[var(--color-text-primary)] break-all">
@@ -328,6 +331,18 @@ function DetailStat({
       </div>
     </div>
   )
+}
+
+function InlineIcon({ icon, size = 14 }: { icon: ReactNode; size?: number }) {
+  if (typeof icon === 'string') {
+    return (
+      <span className="material-symbols-outlined flex-shrink-0" style={{ fontSize: size }}>
+        {icon}
+      </span>
+    )
+  }
+
+  return <>{icon}</>
 }
 
 function MetaPill({ children }: { children: ReactNode }) {

@@ -1,14 +1,14 @@
 /**
  * Adapter Service — 读写 IM Adapter 配置文件
  *
- * 配置文件：~/.claude/adapters.json
+ * 配置文件：Ycode 桌面配置目录/adapters.json
  * 原子写入：先写临时文件，再 rename
  */
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import * as os from 'os'
 import { ApiError } from '../middleware/errorHandler.js'
+import { getDesktopConfigDir } from '../utils/paths.js'
 
 export type PairedUser = {
   userId: string | number
@@ -45,8 +45,7 @@ export type AdapterFileConfig = {
 }
 
 function getConfigPath(): string {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  return path.join(configDir, 'adapters.json')
+  return path.join(getDesktopConfigDir(), 'adapters.json')
 }
 
 function maskSecret(value: string | undefined): string | undefined {

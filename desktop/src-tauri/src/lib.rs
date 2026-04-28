@@ -32,7 +32,7 @@ struct ServerStatus {
 
 /// 与 ServerState 平级的 adapter 子进程状态。
 ///
-/// adapter sidecar（claude-sidecar adapters --feishu --telegram）的生命周期
+/// adapter sidecar（sidecar adapters --feishu --telegram）的生命周期
 /// 跟 server 不同：它没有 HTTP 端口可探活，没配凭据时会自己干净退出，
 /// 而且需要支持运行时热重启 —— 用户在设置页保存飞书 / Telegram 凭据后，
 /// 前端会通过 invoke('restart_adapters_sidecar') 来重启它，让新凭据生效。
@@ -61,7 +61,7 @@ fn get_server_url(state: State<'_, ServerState>) -> Result<String, String> {
 /// 流程：
 ///   1. kill 当前 adapter 子进程（如果在跑）
 ///   2. spawn 新的 adapter 子进程
-///   3. 新 sidecar 内部的 loadConfig() 会读到最新的 ~/.claude/adapters.json
+///   3. 新 sidecar 内部的 loadConfig() 会读到最新的 Ycode adapters 配置
 ///      并重新建立 WebSocket 连接到飞书 / Telegram
 ///
 /// 凭据缺失时 sidecar 自己会 warn + skip + 退出，所以这里不需要前置检查。
@@ -107,9 +107,8 @@ fn resolve_app_root(_app: &AppHandle) -> Result<PathBuf, String> {
     // node_modules/ 当 Resource 一起 ship 到 .app/Contents/Resources/app/。
     //
     // 现在 launcher 改成静态 import + bun build --compile 整棵静态打进二进制，
-    // sidecar 不再读磁盘上的 src/ 或 node_modules/。CLAUDE_APP_ROOT 现在
-    // 只剩一个名义上的"app 安装根目录"作用，给 conversationService 在
-    // spawn CLI 子进程时通过 --app-root 透传。
+    // sidecar 不再读磁盘上的 src/ 或 node_modules/。app_root 只保留为
+    // sidecar 的安装根目录参数。
     //
     // 我们直接用当前可执行文件所在目录作为 app_root：
     //   Dev:  desktop/src-tauri/target/<profile>/  （rust 跑出来的 binary 那一层）
@@ -123,18 +122,36 @@ fn resolve_app_root(_app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn resolve_ycode_data_dir(app: &AppHandle) -> Result<String, String> {
+    if let Ok(value) = std::env::var("YCODE_DATA_DIR") {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("resolve app data dir: {err}"))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("create app data dir {}: {err}", dir.display()))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     let host = "127.0.0.1";
     let port = reserve_local_port()?;
     let url = format!("http://{host}:{port}");
     let app_root = resolve_app_root(app)?;
     let app_root_arg = app_root.to_string_lossy().to_string();
+    let data_dir_arg = resolve_ycode_data_dir(app)?;
 
-    // 单一合并 sidecar：第一个参数选 server / cli / adapters 模式。
+    // 单一桌面 sidecar：第一个参数选 server / adapters 模式。
     let sidecar = app
         .shell()
-        .sidecar("claude-sidecar")
+        .sidecar("ycode-sidecar")
         .map_err(|err| format!("resolve sidecar: {err}"))?
+        .env("YCODE_DATA_DIR", &data_dir_arg)
         .args([
             "server",
             "--app-root",
@@ -154,11 +171,11 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
             match event {
                 CommandEvent::Stdout(line) => {
                     let line = String::from_utf8_lossy(&line);
-                    println!("[claude-server] {}", line.trim_end());
+                    println!("[ycode-server] {}", line.trim_end());
                 }
                 CommandEvent::Stderr(line) => {
                     let line = String::from_utf8_lossy(&line);
-                    eprintln!("[claude-server] {}", line.trim_end());
+                    eprintln!("[ycode-server] {}", line.trim_end());
                 }
                 _ => {}
             }
@@ -189,6 +206,7 @@ fn stop_server_sidecar(app: &AppHandle) {
 fn start_adapters_sidecar(app: &AppHandle) -> Result<CommandChild, String> {
     let app_root = resolve_app_root(app)?;
     let app_root_arg = app_root.to_string_lossy().to_string();
+    let data_dir_arg = resolve_ycode_data_dir(app)?;
 
     // adapter 内部的 WsBridge 默认连 ws://127.0.0.1:3456，但桌面端的 server
     // 用的是 reserve_local_port() 拿到的动态端口。这里把实际端口通过
@@ -219,9 +237,10 @@ fn start_adapters_sidecar(app: &AppHandle) -> Result<CommandChild, String> {
 
     let sidecar = app
         .shell()
-        .sidecar("claude-sidecar")
+        .sidecar("ycode-sidecar")
         .map_err(|err| format!("resolve sidecar: {err}"))?
         .env("ADAPTER_SERVER_URL", &server_ws_url)
+        .env("YCODE_DATA_DIR", &data_dir_arg)
         .args([
             "adapters",
             "--app-root",
@@ -241,18 +260,18 @@ fn start_adapters_sidecar(app: &AppHandle) -> Result<CommandChild, String> {
             match event {
                 CommandEvent::Stdout(line) => {
                     let line = String::from_utf8_lossy(&line);
-                    println!("[claude-adapters] {}", line.trim_end());
+                    println!("[ycode-adapters] {}", line.trim_end());
                 }
                 CommandEvent::Stderr(line) => {
                     let line = String::from_utf8_lossy(&line);
-                    eprintln!("[claude-adapters] {}", line.trim_end());
+                    eprintln!("[ycode-adapters] {}", line.trim_end());
                 }
                 CommandEvent::Terminated(payload) => {
                     // exit code != 0 是常态：用户没配凭据时 sidecar 内部会
                     // warn + skip + process.exit(1)。这里只 info 一行，
                     // 不要当错误冒泡。
                     println!(
-                        "[claude-adapters] sidecar exited (code={:?}, signal={:?})",
+                        "[ycode-adapters] sidecar exited (code={:?}, signal={:?})",
                         payload.code, payload.signal
                     );
                 }
@@ -311,15 +330,11 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     let builder = builder
         .menu(|app| {
-            let about_item = MenuItemBuilder::with_id("nav_about", "关于 Claude Code Haha")
-                .build(app)?;
             let settings_item = MenuItemBuilder::with_id("nav_settings", "设置...")
                 .accelerator("CmdOrCtrl+,")
                 .build(app)?;
 
-            let app_submenu = SubmenuBuilder::new(app, "Claude Code Haha")
-                .item(&about_item)
-                .separator()
+            let app_submenu = SubmenuBuilder::new(app, "Ycode")
                 .item(&settings_item)
                 .separator()
                 .services()
@@ -359,9 +374,6 @@ pub fn run() {
                 .build()
         })
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "nav_about" => {
-                let _ = app.emit("native-menu-navigate", "about");
-            }
             "nav_settings" => {
                 let _ = app.emit("native-menu-navigate", "settings");
             }

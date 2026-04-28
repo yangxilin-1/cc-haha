@@ -1,5 +1,6 @@
 import { useTranslation } from '../i18n'
 import { mockScheduledTasks, mockStatusBar } from '../mocks/data'
+import { FolderLineIcon } from '../components/shared/LineIcons'
 
 export function ScheduledTasksList() {
   const t = useTranslation()
@@ -14,12 +15,7 @@ export function ScheduledTasksList() {
       <aside className="fixed left-0 top-0 h-full w-[280px] bg-[#F4F4F0] flex flex-col p-4 gap-2 z-40">
         <div className="mb-6 px-2 flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-[#AD5F45] flex items-center justify-center">
-            <span
-              className="material-symbols-outlined text-white"
-              style={{ fontVariationSettings: "'FILL' 1" }}
-            >
-              folder_managed
-            </span>
+            <FolderLineIcon size={18} className="text-white" />
           </div>
           <div>
             <h2 className="font-[Manrope,sans-serif] text-sm font-bold text-[#1B1C1A] uppercase tracking-tighter">{t('sidebar.allProjects')}</h2>
@@ -77,7 +73,7 @@ export function ScheduledTasksList() {
         {/* TopAppBar */}
         <header className="bg-[#FAF9F5] h-12 w-full flex justify-between items-center px-6 z-30">
           <div className="flex items-center gap-8">
-            <div className="font-[Manrope,sans-serif] font-bold text-[#1B1C1A] uppercase tracking-tighter text-sm">Claude Code Companion</div>
+            <div className="font-[Manrope,sans-serif] font-bold text-[#1B1C1A] uppercase tracking-tighter text-sm">Ycode Desktop</div>
             <nav className="flex items-center gap-6 font-[Manrope,sans-serif] font-semibold tracking-wide text-sm">
               <a className="text-[#87736D] hover:text-[#8F482F] transition-colors" href="#">{t('titlebar.code')}</a>
               <a className="text-[#87736D] hover:text-[#8F482F] transition-colors" href="#">{t('titlebar.terminal')}</a>

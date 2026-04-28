@@ -1,15 +1,16 @@
 /**
  * Provider Service — preset-based provider configuration
  *
- * Storage: ~/.claude/cc-haha/providers.json (lightweight index)
- * Active provider env vars written to ~/.claude/cc-haha/settings.json
- * (isolated from the original Claude Code's ~/.claude/settings.json)
+ * Storage: Ycode data dir providers.json (lightweight index)
+ * Active provider env vars written to Ycode data dir settings.json
+ * (isolated from legacy CLI settings).
  */
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import * as os from 'os'
+import { getAppDataDir } from '../utils/paths.js'
 import { ApiError } from '../middleware/errorHandler.js'
+import { officialClaudeSettingsService } from './officialClaudeSettingsService.js'
 import { anthropicToOpenaiChat } from '../proxy/transform/anthropicToOpenaiChat.js'
 import { anthropicToOpenaiResponses } from '../proxy/transform/anthropicToOpenaiResponses.js'
 import { openaiChatToAnthropic } from '../proxy/transform/openaiChatToAnthropic.js'
@@ -47,20 +48,16 @@ export class ProviderService {
   static getServerPort(): number {
     return ProviderService.serverPort
   }
-  private getConfigDir(): string {
-    return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  }
-
-  private getCcHahaDir(): string {
-    return path.join(this.getConfigDir(), 'cc-haha')
+  private getYcodeDir(): string {
+    return getAppDataDir()
   }
 
   private getIndexPath(): string {
-    return path.join(this.getCcHahaDir(), 'providers.json')
+    return path.join(this.getYcodeDir(), 'providers.json')
   }
 
   private getSettingsPath(): string {
-    return path.join(this.getCcHahaDir(), 'settings.json')
+    return path.join(this.getYcodeDir(), 'settings.json')
   }
 
   private async readIndex(): Promise<ProvidersIndex> {
@@ -216,6 +213,7 @@ export class ProviderService {
   private async syncToSettings(provider: SavedProvider): Promise<void> {
     const settings = await this.readSettings()
     const existingEnv = (settings.env as Record<string, string>) || {}
+    const models = normalizeModelMapping(provider.models)
 
     const needsProxy = provider.apiFormat != null && provider.apiFormat !== 'anthropic'
     const baseUrl = needsProxy
@@ -226,10 +224,10 @@ export class ProviderService {
       ...existingEnv,
       ANTHROPIC_BASE_URL: baseUrl,
       ANTHROPIC_AUTH_TOKEN: needsProxy ? 'proxy-managed' : provider.apiKey,
-      ANTHROPIC_MODEL: provider.models.main,
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: provider.models.haiku,
-      ANTHROPIC_DEFAULT_SONNET_MODEL: provider.models.sonnet,
-      ANTHROPIC_DEFAULT_OPUS_MODEL: provider.models.opus,
+      ANTHROPIC_MODEL: models.main,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: models.haiku,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: models.sonnet,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: models.opus,
     }
 
     await this.writeSettings(settings)
@@ -255,41 +253,51 @@ export class ProviderService {
 
   /**
    * Check whether any usable auth exists:
-   *  1. A cc-haha provider is active → has auth
-   *  2. Original ~/.claude/settings.json has ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY → has auth
-   *  3. process.env already has ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN → has auth
-   *  4. None of the above → needs setup
+   *  1. A Ycode provider is active → has auth
+   *  2. Ycode desktop settings.json has ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY → has auth
+   *  3. Official Claude ~/.claude/settings.json has ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY → has auth
+   *  4. process.env already has ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN → has auth
+   *  5. None of the above → needs setup
    */
   async checkAuthStatus(): Promise<{
     hasAuth: boolean
-    source: 'cc-haha-provider' | 'original-settings' | 'env' | 'none'
+    source: 'ycode-provider' | 'desktop-settings' | 'official-settings' | 'env' | 'none'
     activeProvider?: string
   }> {
-    // 1. Check cc-haha active provider
+    // 1. Check Ycode active provider
     const index = await this.readIndex()
     if (index.activeId) {
       const provider = index.providers.find(p => p.id === index.activeId)
       if (provider?.apiKey) {
-        return { hasAuth: true, source: 'cc-haha-provider', activeProvider: provider.name }
+        return { hasAuth: true, source: 'ycode-provider', activeProvider: provider.name }
       }
     }
 
-    // 2. Check process.env (covers .env file + inherited env)
-    if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
-      return { hasAuth: true, source: 'env' }
-    }
-
-    // 3. Check original ~/.claude/settings.json
+    // 2. Check Ycode desktop settings.json
     try {
-      const originalPath = path.join(this.getConfigDir(), 'settings.json')
-      const raw = await fs.readFile(originalPath, 'utf-8')
-      const settings = JSON.parse(raw) as { env?: Record<string, string> }
-      const env = settings.env ?? {}
-      if (env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY) {
-        return { hasAuth: true, source: 'original-settings' }
+      const settings = await this.readSettings()
+      const env = settings.env as Record<string, string> | undefined
+      if (env?.ANTHROPIC_AUTH_TOKEN || env?.ANTHROPIC_API_KEY) {
+        return { hasAuth: true, source: 'desktop-settings' }
       }
     } catch {
-      // File doesn't exist or invalid
+      // Missing or invalid desktop settings; fall through to process.env.
+    }
+
+    // 3. Check official Claude Code settings for compatibility.
+    try {
+      const settings = await officialClaudeSettingsService.getUserSettings()
+      const env = settings.env as Record<string, string> | undefined
+      if (env?.ANTHROPIC_AUTH_TOKEN || env?.ANTHROPIC_API_KEY) {
+        return { hasAuth: true, source: 'official-settings' }
+      }
+    } catch {
+      // Compatibility fallback only; ignore failures and continue.
+    }
+
+    // 4. Check process.env (covers .env file + inherited env)
+    if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
+      return { hasAuth: true, source: 'env' }
     }
 
     return { hasAuth: false, source: 'none' }
@@ -500,6 +508,16 @@ function buildDirectTestRequest(
     url: `${base}/v1/messages`,
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: { model: modelId, max_tokens: 16, messages: [{ role: 'user', content: prompt }] },
+  }
+}
+
+function normalizeModelMapping(models: SavedProvider['models']): SavedProvider['models'] {
+  const main = models.main.trim()
+  return {
+    main,
+    haiku: models.haiku.trim() || main,
+    sonnet: models.sonnet.trim() || main,
+    opus: models.opus.trim() || main,
   }
 }
 

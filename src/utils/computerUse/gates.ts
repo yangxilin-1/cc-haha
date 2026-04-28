@@ -1,7 +1,5 @@
 import type { CoordinateMode, CuSubGates } from '../../vendor/computer-use-mcp/types.js'
 
-import { getDynamicConfig_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-
 type ChicagoConfig = CuSubGates & {
   enabled: boolean
   coordinateMode: CoordinateMode
@@ -18,25 +16,12 @@ const DEFAULTS: ChicagoConfig = {
   coordinateMode: 'pixels',
 }
 
-// Spread over defaults so a partial JSON ({"enabled": true} alone) inherits the
-// rest. The generic on getDynamicConfig is a type assertion, not a validator —
-// GB returning a partial object would otherwise surface undefined fields.
-function readConfig(): ChicagoConfig {
-  return {
-    ...DEFAULTS,
-    ...getDynamicConfig_CACHED_MAY_BE_STALE<Partial<ChicagoConfig>>(
-      'tengu_malort_pedway',
-      DEFAULTS,
-    ),
-  }
-}
-
 export function getChicagoEnabled(): boolean {
   return true
 }
 
 export function getChicagoSubGates(): CuSubGates {
-  const { enabled: _e, coordinateMode: _c, ...subGates } = readConfig()
+  const { enabled: _e, coordinateMode: _c, ...subGates } = DEFAULTS
   return subGates
 }
 
@@ -45,6 +30,6 @@ export function getChicagoSubGates(): CuSubGates {
 // GB flip tell the model "pixels" while transforming clicks as normalized.
 let frozenCoordinateMode: CoordinateMode | undefined
 export function getChicagoCoordinateMode(): CoordinateMode {
-  frozenCoordinateMode ??= readConfig().coordinateMode
+  frozenCoordinateMode ??= DEFAULTS.coordinateMode
   return frozenCoordinateMode
 }

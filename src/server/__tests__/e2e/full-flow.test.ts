@@ -261,13 +261,13 @@ describe('E2E: Full Flow', () => {
     expect(status).toBe(201)
   })
 
-  it('should expose shared active/all agent payload independent of CRUD storage', async () => {
+  it('should expose built-in and user-created agents in the shared payload', async () => {
     const { data } = await api('GET', '/api/agents')
     expect(Array.isArray(data.activeAgents)).toBe(true)
     expect(Array.isArray(data.allAgents)).toBe(true)
     expect(data.activeAgents.length).toBeGreaterThan(0)
     expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-agent')).toBe(false)
+    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-agent' && agent.source === 'userSettings')).toBe(true)
   })
 
   it('should delete an agent', async () => {

@@ -7,6 +7,7 @@ import type {
   UpdateProviderInput,
   TestProviderConfigInput,
   ProviderTestResult,
+  LocalLlamaConfig,
 } from '../types/provider'
 import type { ProviderPreset } from '../config/providerPresets'
 
@@ -14,9 +15,10 @@ type ProvidersResponse = { providers: SavedProvider[]; activeId: string | null }
 type ProviderResponse = { provider: SavedProvider }
 type PresetsResponse = { presets: ProviderPreset[] }
 type TestResultResponse = { result: ProviderTestResult }
+type LocalLlamaResponse = { config: LocalLlamaConfig }
 type AuthStatusResponse = {
   hasAuth: boolean
-  source: 'cc-haha-provider' | 'original-settings' | 'env' | 'none'
+  source: 'ycode-provider' | 'desktop-settings' | 'official-settings' | 'env' | 'none'
   activeProvider?: string
 }
 
@@ -31,6 +33,14 @@ export const providersApi = {
 
   authStatus() {
     return api.get<AuthStatusResponse>('/api/providers/auth-status')
+  },
+
+  localLlamaConfig() {
+    return api.get<LocalLlamaResponse>('/api/providers/local-llama')
+  },
+
+  startLocalLlama() {
+    return api.post<LocalLlamaResponse>('/api/providers/local-llama/start')
   },
 
   create(input: CreateProviderInput) {

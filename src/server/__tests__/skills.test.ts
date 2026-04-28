@@ -8,7 +8,7 @@ import { handleSkillsApi } from '../api/skills.js'
 let tmpHome: string
 let originalHome: string | undefined
 let originalUserProfile: string | undefined
-let originalClaudeConfigDir: string | undefined
+let originalYcodeConfigDir: string | undefined
 let originalCwdState: string
 
 function makeRequest(urlStr: string): { req: Request; url: URL; segments: string[] } {
@@ -32,12 +32,12 @@ describe('Skills API', () => {
     tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-skills-test-'))
     originalHome = process.env.HOME
     originalUserProfile = process.env.USERPROFILE
-    originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+    originalYcodeConfigDir = process.env.YCODE_CONFIG_DIR
     originalCwdState = getCwdState()
 
     process.env.HOME = tmpHome
     process.env.USERPROFILE = tmpHome
-    process.env.CLAUDE_CONFIG_DIR = path.join(tmpHome, '.claude')
+    process.env.YCODE_CONFIG_DIR = path.join(tmpHome, '.ycode')
     setCwdState(tmpHome)
   })
 
@@ -54,10 +54,10 @@ describe('Skills API', () => {
       process.env.USERPROFILE = originalUserProfile
     }
 
-    if (originalClaudeConfigDir === undefined) {
-      delete process.env.CLAUDE_CONFIG_DIR
+    if (originalYcodeConfigDir === undefined) {
+      delete process.env.YCODE_CONFIG_DIR
     } else {
-      process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir
+      process.env.YCODE_CONFIG_DIR = originalYcodeConfigDir
     }
 
     setCwdState(originalCwdState)
@@ -65,7 +65,7 @@ describe('Skills API', () => {
   })
 
   it('lists user and project skills for the requested cwd', async () => {
-    const userSkillsRoot = path.join(tmpHome, '.claude', 'skills')
+    const userSkillsRoot = path.join(tmpHome, '.ycode', 'skills')
     const projectRoot = path.join(tmpHome, 'workspace')
     const cwd = path.join(projectRoot, 'packages', 'app')
 
@@ -75,7 +75,7 @@ describe('Skills API', () => {
       ['---', 'description: User scope', '---', '', '# User skill'].join('\n'),
     )
     await writeSkill(
-      path.join(projectRoot, '.claude', 'skills'),
+      path.join(projectRoot, '.ycode', 'skills'),
       'project-skill',
       ['---', 'description: Project scope', '---', '', '# Project skill'].join('\n'),
     )
@@ -92,8 +92,8 @@ describe('Skills API', () => {
   it('resolves project skill details from the nearest project skills directory', async () => {
     const projectRoot = path.join(tmpHome, 'workspace')
     const nestedRoot = path.join(projectRoot, 'packages', 'app')
-    const nestedSkillsRoot = path.join(nestedRoot, '.claude', 'skills')
-    const parentSkillsRoot = path.join(projectRoot, '.claude', 'skills')
+    const nestedSkillsRoot = path.join(nestedRoot, '.ycode', 'skills')
+    const parentSkillsRoot = path.join(projectRoot, '.ycode', 'skills')
 
     await writeSkill(
       parentSkillsRoot,

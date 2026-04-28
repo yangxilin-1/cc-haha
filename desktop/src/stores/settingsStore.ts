@@ -5,7 +5,7 @@ import type { PermissionMode, EffortLevel, ModelInfo, ThemeMode } from '../types
 import type { Locale } from '../i18n'
 import { useUIStore } from './uiStore'
 
-const LOCALE_STORAGE_KEY = 'cc-haha-locale'
+const LOCALE_STORAGE_KEY = 'ycode-locale'
 
 function getStoredLocale(): Locale {
   try {

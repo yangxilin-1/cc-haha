@@ -32,6 +32,67 @@ export interface RunningApp {
   displayName: string
 }
 
+export interface WindowInfo {
+  id?: string
+  bundleId: string
+  displayName: string
+  title: string
+  bounds: { x: number; y: number; width: number; height: number }
+  isFrontmost?: boolean
+  isAllowed?: boolean
+}
+
+export interface UiElementInfo {
+  id: string
+  elementId?: string
+  element_id?: string
+  bundleId: string
+  displayName: string
+  role: string
+  name: string
+  value?: string
+  automationId?: string
+  className?: string
+  bounds: { x: number; y: number; width: number; height: number }
+  enabled?: boolean
+  focused?: boolean
+  isAllowed?: boolean
+}
+
+export interface DesktopObservation {
+  frontmostApp: FrontmostApp | null
+  windows: WindowInfo[]
+  uiElements: UiElementInfo[]
+  semanticUi: 'uia' | 'ax' | 'none'
+  elementCount: number
+  truncated: boolean
+}
+
+export interface OpenApplicationResult {
+  opened: boolean
+  activated: boolean
+  targetBundleId: string
+  targetDisplayName?: string
+  frontmostApp: FrontmostApp | null
+  blockedByHost?: boolean
+}
+
+export interface DesktopIntentResult {
+  intent: string
+  handled: boolean
+  appBundleId?: string
+  query?: string
+  opened?: boolean
+  activated?: boolean
+  attempted?: boolean
+  completed?: boolean
+  method?: string
+  frontmostApp?: FrontmostApp | null
+  verification?: unknown
+  notes?: string[]
+  guidance?: string
+}
+
 export interface InstalledApp {
   bundleId: string
   displayName: string
@@ -91,10 +152,24 @@ export interface ComputerExecutor {
   getCursorPosition(): Promise<{ x: number; y: number }>
   getFrontmostApp(): Promise<FrontmostApp | null>
   appUnderPoint(x: number, y: number): Promise<{ bundleId: string; displayName: string } | null>
+  observeDesktop(opts: {
+    allowedBundleIds: string[]
+    displayId?: number
+    maxElements?: number
+  }): Promise<DesktopObservation>
+  clickUiElement(elementId: string): Promise<void>
+  focusUiElement(elementId: string): Promise<void>
+  setUiElementValue(elementId: string, text: string): Promise<{ usedValuePattern: boolean }>
   listInstalledApps(): Promise<InstalledApp[]>
   getAppIcon?(path: string): Promise<string | undefined>
   listRunningApps(): Promise<RunningApp[]>
-  openApp(bundleId: string): Promise<void>
+  openApp(bundleId: string): Promise<OpenApplicationResult>
+  runDesktopIntent(opts: {
+    intent: string
+    instruction: string
+    appBundleId?: string
+    query?: string
+  }): Promise<DesktopIntentResult>
   readClipboard(): Promise<string>
   writeClipboard(text: string): Promise<void>
 }

@@ -1,15 +1,15 @@
 /**
  * AgentService — Agent 定义的增删改查
  *
- * Agent 定义存储在 ~/.claude/agents/ 目录下，每个 Agent 一个 YAML 文件。
+ * Agent 定义存储在 Ycode 桌面配置目录的 agents/ 目录下，每个 Agent 一个 YAML 文件。
  * 也支持 .md 文件（YAML frontmatter 格式）。
  */
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import * as os from 'os'
 import YAML from 'yaml'
 import { ApiError } from '../middleware/errorHandler.js'
+import { getDesktopConfigDir } from '../utils/paths.js'
 
 export type AgentDefinition = {
   name: string
@@ -18,14 +18,25 @@ export type AgentDefinition = {
   tools?: string[]
   systemPrompt?: string
   color?: string
+  maxTurns?: number
+}
+
+export type AgentSource = 'userSettings' | 'projectSettings'
+
+export type StoredAgentDefinition = AgentDefinition & {
+  source: AgentSource
+  baseDir: string
 }
 
 export class AgentService {
   /** Agent 定义目录 */
   private getAgentsDir(): string {
-    const configDir =
-      process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    const configDir = getDesktopConfigDir()
     return path.join(configDir, 'agents')
+  }
+
+  private getProjectAgentsDir(projectRoot: string): string {
+    return path.join(projectRoot, '.ycode', 'agents')
   }
 
   // ---------------------------------------------------------------------------
@@ -34,8 +45,26 @@ export class AgentService {
 
   /** 列出所有 Agent 定义 */
   async listAgents(): Promise<AgentDefinition[]> {
-    const dir = this.getAgentsDir()
+    return (await this.listAgentsFromDir(this.getAgentsDir())).map(stripStorageFields)
+  }
 
+  async listStoredAgents(projectRoot?: string): Promise<StoredAgentDefinition[]> {
+    const userAgents = await this.listAgentsFromDir(this.getAgentsDir(), 'userSettings') as StoredAgentDefinition[]
+    const projectAgents = projectRoot
+      ? await this.listAgentsFromDir(this.getProjectAgentsDir(projectRoot), 'projectSettings') as StoredAgentDefinition[]
+      : []
+
+    return [...userAgents, ...projectAgents]
+  }
+
+  async listProjectAgents(projectRoot: string): Promise<AgentDefinition[]> {
+    return (await this.listAgentsFromDir(this.getProjectAgentsDir(projectRoot))).map(stripStorageFields)
+  }
+
+  private async listAgentsFromDir(
+    dir: string,
+    source?: AgentSource,
+  ): Promise<Array<AgentDefinition | StoredAgentDefinition>> {
     try {
       await fs.access(dir)
     } catch {
@@ -43,7 +72,7 @@ export class AgentService {
     }
 
     const entries = await fs.readdir(dir, { withFileTypes: true })
-    const agents: AgentDefinition[] = []
+    const agents: Array<AgentDefinition | StoredAgentDefinition> = []
 
     for (const entry of entries) {
       if (!entry.isFile()) continue
@@ -52,7 +81,9 @@ export class AgentService {
 
       try {
         const agent = await this.loadAgentFile(path.join(dir, entry.name))
-        if (agent) agents.push(agent)
+        if (agent) {
+          agents.push(source ? { ...agent, source, baseDir: dir } : agent)
+        }
       } catch {
         // 跳过无法解析的文件
       }
@@ -62,8 +93,11 @@ export class AgentService {
   }
 
   /** 获取单个 Agent */
-  async getAgent(name: string): Promise<AgentDefinition | null> {
-    const filePath = await this.findAgentFile(name)
+  async getAgent(name: string, projectRoot?: string): Promise<AgentDefinition | null> {
+    const filePath = projectRoot
+      ? await this.findAgentFile(name, this.getProjectAgentsDir(projectRoot))
+        ?? await this.findAgentFile(name)
+      : await this.findAgentFile(name)
     if (!filePath) return null
     return this.loadAgentFile(filePath)
   }
@@ -119,8 +153,7 @@ export class AgentService {
   // ---------------------------------------------------------------------------
 
   /** 查找 Agent 文件（支持 .yaml / .yml / .md） */
-  private async findAgentFile(name: string): Promise<string | null> {
-    const dir = this.getAgentsDir()
+  private async findAgentFile(name: string, dir = this.getAgentsDir()): Promise<string | null> {
     const safeName = this.sanitizeName(name)
     const candidates = [
       path.join(dir, `${safeName}.yaml`),
@@ -195,6 +228,7 @@ export class AgentService {
       systemPrompt:
         typeof data.systemPrompt === 'string' ? data.systemPrompt : undefined,
       color: typeof data.color === 'string' ? data.color : undefined,
+      maxTurns: typeof data.maxTurns === 'number' ? data.maxTurns : undefined,
     }
   }
 
@@ -211,6 +245,7 @@ export class AgentService {
     if (agent.model !== undefined) data.model = agent.model
     if (agent.tools !== undefined) data.tools = agent.tools
     if (agent.color !== undefined) data.color = agent.color
+    if (agent.maxTurns !== undefined) data.maxTurns = agent.maxTurns
 
     if (ext === '.md') {
       // Markdown: frontmatter + body (systemPrompt)
@@ -237,4 +272,9 @@ export class AgentService {
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '')
   }
+}
+
+function stripStorageFields(agent: AgentDefinition | StoredAgentDefinition): AgentDefinition {
+  const { name, description, model, tools, systemPrompt, color, maxTurns } = agent
+  return { name, description, model, tools, systemPrompt, color, maxTurns }
 }

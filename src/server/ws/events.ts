@@ -11,6 +11,11 @@
 export type ClientMessage =
   | { type: 'user_message'; content: string; attachments?: AttachmentRef[] }
   | {
+      type: 'rollback_patch'
+      originalToolUseId: string
+      reversePatch: string
+    }
+  | {
       type: 'permission_response'
       requestId: string
       allowed: boolean
@@ -34,6 +39,36 @@ export type AttachmentRef = {
   mimeType?: string
 }
 
+export type ToolResultMetadata = {
+  summary?: string
+  durationMs?: number
+  exitCode?: number
+  timedOut?: boolean
+  outputTruncated?: boolean
+  filePath?: string
+  files?: string[]
+  additions?: number
+  deletions?: number
+  patch?: PatchAuditMetadata
+  bytes?: number
+  lines?: number
+  matches?: number
+  occurrences?: number
+}
+
+export type PatchAuditMetadata = {
+  forwardPatch: string
+  reversePatch: string
+  files: Array<{
+    path: string
+    operation: 'create' | 'modify' | 'delete'
+    additions: number
+    deletions: number
+    beforeSha256: string | null
+    afterSha256: string | null
+  }>
+}
+
 // ============================================================================
 // Server → Client
 // ============================================================================
@@ -43,7 +78,7 @@ export type ServerMessage =
   | { type: 'content_start'; blockType: 'text' | 'tool_use'; toolName?: string; toolUseId?: string; parentToolUseId?: string }
   | { type: 'content_delta'; text?: string; toolInput?: string }
   | { type: 'tool_use_complete'; toolName: string; toolUseId: string; input: unknown; parentToolUseId?: string }
-  | { type: 'tool_result'; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string }
+  | { type: 'tool_result'; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string; metadata?: ToolResultMetadata }
   | {
       type: 'permission_request'
       requestId: string

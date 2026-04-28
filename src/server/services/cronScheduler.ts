@@ -2,9 +2,9 @@
  * CronScheduler — Execution engine for scheduled tasks
  *
  * Periodically checks all scheduled tasks and executes those whose cron
- * expression matches the current time. Tasks are run by spawning a CLI
- * subprocess with the task's prompt. Execution history is persisted to
- * ~/.claude/scheduled_tasks_log.json.
+ * expression matches the current time. Tasks are run through the native
+ * desktop CodeEngine. Execution history is persisted to
+ * Ycode desktop config/scheduled_tasks_log.json.
  */
 
 import * as fs from 'fs/promises'
@@ -15,6 +15,8 @@ import * as crypto from 'crypto'
 import { CronService, type CronTask } from './cronService.js'
 import { SessionService } from './sessionService.js'
 import { sendTaskNotification } from './notificationService.js'
+import { CodeEngine } from '../runtime/CodeEngine.js'
+import { getDesktopConfigDir } from '../utils/paths.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -34,56 +36,6 @@ export type TaskRun = {
 }
 
 // ─── Output extraction ────────────────────────────────────────────────────────
-
-/**
- * Extract meaningful assistant text from raw CLI stream-json (NDJSON) output.
- *
- * The raw stdout contains system/init messages, tool_use blocks, tool_result
- * echoes, and thinking blocks — all of which are noise to the end user. The
- * actual AI answer (assistant text blocks + final result) is what matters.
- *
- * By extracting server-side we avoid the 10K naive truncation problem where
- * the useful content sits well past the first 10K characters.
- */
-function extractAssistantText(raw: string): string {
-  if (!raw) return ''
-  const lines = raw.split('\n')
-  const parts: string[] = []
-
-  for (const line of lines) {
-    if (!line.trim()) continue
-    let parsed: any
-    try {
-      parsed = JSON.parse(line)
-    } catch {
-      continue // skip non-JSON lines and truncated lines
-    }
-
-    const type = parsed?.type
-
-    if (type === 'assistant') {
-      const content = parsed?.message?.content
-      if (!Array.isArray(content)) continue
-      for (const block of content) {
-        if (block.type === 'text' && block.text?.trim()) {
-          parts.push(block.text.trim())
-        }
-        // Skip tool_use, thinking blocks
-      }
-    }
-
-    if (type === 'result') {
-      const result = parsed?.result
-      if (typeof result === 'string' && result.trim()) {
-        parts.push(result.trim())
-      } else if (result?.message?.trim()) {
-        parts.push(result.message.trim())
-      }
-    }
-  }
-
-  return parts.join('\n\n')
-}
 
 // ─── Cron expression matching ──────────────────────────────────────────────────
 
@@ -165,9 +117,7 @@ export function cronMatches(cronExpr: string, date: Date): boolean {
 type RunsFile = { runs: TaskRun[] }
 
 function getLogFilePath(): string {
-  const configDir =
-    process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  return path.join(configDir, 'scheduled_tasks_log.json')
+  return path.join(getDesktopConfigDir(), 'scheduled_tasks_log.json')
 }
 
 async function readRunsFile(): Promise<RunsFile> {
@@ -246,16 +196,18 @@ export class CronScheduler {
   private intervalId: Timer | null = null
   private runningTasks = new Map<
     string,
-    { proc: ReturnType<typeof Bun.spawn>; startedAt: number; runId: string }
+    { abortController: AbortController; startedAt: number; runId: string }
   >()
   /** Track which minute each task last fired (prevents same-process duplicate within a minute). */
   private lastFiredMinuteKey = new Map<string, string>()
   private cronService: CronService
   private sessionService: SessionService
+  private engine: CodeEngine
 
-  constructor(cronService?: CronService) {
+  constructor(cronService?: CronService, engine?: CodeEngine) {
     this.cronService = cronService || new CronService()
     this.sessionService = new SessionService()
+    this.engine = engine || new CodeEngine()
   }
 
   /** Return a string key representing the calendar minute of `date`. */
@@ -283,11 +235,7 @@ export class CronScheduler {
       this.intervalId = null
     }
     for (const [taskId, entry] of this.runningTasks) {
-      try {
-        entry.proc.kill()
-      } catch {
-        // process may have already exited
-      }
+      entry.abortController.abort()
       this.runningTasks.delete(taskId)
     }
     console.log('[CronScheduler] Stopped')
@@ -335,11 +283,13 @@ export class CronScheduler {
   }
 
   /**
-   * Execute a single task by spawning a CLI subprocess.
+   * Execute a single task through the native desktop runtime.
    * @param task The task to execute
-   * @param options.createSession When true, creates a Session for rich output viewing (used for manual "Run Now")
+   * @param options.createSession Kept for API compatibility; native execution always creates a session so the transcript can be inspected.
    */
   async executeTask(task: CronTask, options?: { createSession?: boolean }): Promise<TaskRun> {
+    void options
+
     // Prevent concurrent executions of the same task
     const existing = this.runningTasks.get(task.id)
     if (existing) {
@@ -364,20 +314,7 @@ export class CronScheduler {
       workDir = os.homedir()
     }
 
-    // Only create a session when explicitly requested (manual "Run Now"),
-    // not for automatic cron runs — avoids flooding the sidebar.
     let sessionId: string | undefined
-    if (options?.createSession) {
-      try {
-        const result = await this.sessionService.createSession(workDir)
-        sessionId = result.sessionId
-        // Delete the placeholder JSONL file so the CLI can create it fresh
-        // with actual content. Same pattern as conversationService.ts.
-        await this.sessionService.deleteSessionFile(sessionId)
-      } catch {
-        // Fall back to no session if creation fails
-      }
-    }
 
     const run: TaskRun = {
       id: runId,
@@ -396,118 +333,70 @@ export class CronScheduler {
     // Persist the "running" state
     await appendRun(run)
 
-    // Resolve paths relative to project root
-    const projectRoot = path.resolve(import.meta.dir, '../../..')
-    const cliPath = path.join(projectRoot, 'src/entrypoints/cli.tsx')
-    const preloadPath = path.join(projectRoot, 'preload.ts')
-
-    const inputPayload = JSON.stringify({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: task.prompt }],
-      },
-      parent_tool_use_id: null,
-      session_id: sessionId || '',
-    }) + '\n'
-
-    const proc = Bun.spawn(
-      [
-        'bun',
-        '--preload',
-        preloadPath,
-        cliPath,
-        '--print',
-        '--verbose',
-        '--input-format',
-        'stream-json',
-        '--output-format',
-        'stream-json',
-        ...(sessionId ? ['--session-id', sessionId] : []),
-      ],
-      {
-        stdin: 'pipe',
-        stdout: 'pipe',
-        stderr: 'pipe',
-        cwd: workDir,
-      },
-    )
-
-    this.runningTasks.set(task.id, { proc, startedAt: Date.now(), runId })
-
-    // Write prompt to stdin then close it
-    try {
-      proc.stdin.write(inputPayload)
-      proc.stdin.end()
-    } catch {
-      // If writing fails, the process may have already exited
-    }
+    const abortController = new AbortController()
+    this.runningTasks.set(task.id, {
+      abortController,
+      startedAt: Date.now(),
+      runId,
+    })
 
     // Set up a timeout
     const timeoutId = setTimeout(() => {
-      if (this.runningTasks.has(task.id)) {
-        try {
-          proc.kill()
-        } catch {
-          // ignore
-        }
-      }
+      if (this.runningTasks.has(task.id)) abortController.abort()
     }, TASK_TIMEOUT_MS)
 
     try {
-      // Collect stdout
-      const stdoutChunks: string[] = []
-      if (proc.stdout) {
-        const reader = proc.stdout.getReader()
-        const decoder = new TextDecoder()
-        try {
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
-            stdoutChunks.push(decoder.decode(value, { stream: true }))
-          }
-        } catch {
-          // stream may be interrupted on kill
+      const result = await this.sessionService.createSession(workDir, 'code')
+      sessionId = result.sessionId
+      run.sessionId = sessionId
+      await updateRun(run)
+
+      const outputParts: string[] = []
+      let runtimeError: string | undefined
+      let completed = false
+
+      for await (const event of this.engine.sendMessage({
+        sessionId,
+        content: task.prompt,
+        settings: {
+          permissionMode: task.permissionMode || 'dontAsk',
+          model: task.model,
+          mode: 'code',
+        },
+        signal: abortController.signal,
+      })) {
+        if (event.type === 'content_delta' && event.text) {
+          outputParts.push(event.text)
+        }
+        if (event.type === 'error') {
+          runtimeError = event.message
+        }
+        if (event.type === 'message_complete') {
+          completed = true
         }
       }
-
-      // Wait for exit
-      const exitCode = await proc.exited
 
       clearTimeout(timeoutId)
       this.runningTasks.delete(task.id)
 
       const completedAt = new Date().toISOString()
-      const rawOutput = stdoutChunks.join('')
       const durationMs =
         new Date(completedAt).getTime() - new Date(startedAt).getTime()
 
-      // Determine if this was a timeout
-      const wasTimeout = durationMs >= TASK_TIMEOUT_MS
-
-      // Extract only meaningful AI text responses from raw NDJSON output.
-      // The raw stream contains system/init messages, tool_use blocks, and
-      // tool_result echoes that consume thousands of chars before any actual
-      // AI answer appears. A naive .slice(0, 10_000) would lose the answer.
-      const output = extractAssistantText(rawOutput)
+      const status = abortController.signal.aborted
+        ? 'timeout'
+        : runtimeError || !completed
+          ? 'failed'
+          : 'completed'
 
       const completedRun: TaskRun = {
         ...run,
         completedAt,
-        status: wasTimeout ? 'timeout' : exitCode === 0 ? 'completed' : 'failed',
-        output: output.slice(0, 50_000), // cap after extraction
-        exitCode,
+        status,
+        output: outputParts.join('').trim().slice(0, 50_000),
+        exitCode: status === 'completed' ? 0 : 1,
         durationMs,
-      }
-
-      // Collect stderr for error field
-      if (exitCode !== 0 && proc.stderr) {
-        try {
-          const stderrText = await new Response(proc.stderr).text()
-          completedRun.error = stderrText.slice(0, 5_000)
-        } catch {
-          // ignore
-        }
+        ...(runtimeError ? { error: runtimeError.slice(0, 5_000) } : {}),
       }
 
       await updateRun(completedRun)
@@ -534,14 +423,28 @@ export class CronScheduler {
       const completedAt = new Date().toISOString()
       const failedRun: TaskRun = {
         ...run,
+        ...(sessionId ? { sessionId } : {}),
         completedAt,
-        status: 'failed',
+        status: abortController.signal.aborted ? 'timeout' : 'failed',
         error: (err as Error).message,
+        exitCode: 1,
         durationMs:
           new Date(completedAt).getTime() - new Date(startedAt).getTime(),
       }
 
       await updateRun(failedRun)
+
+      if (task.notification?.enabled && task.notification.channels.length > 0) {
+        sendTaskNotification(failedRun, task.notification).catch((notifyErr) => {
+          console.error(`[CronScheduler] Notification error for task ${task.id}:`, notifyErr)
+        })
+      }
+
+      if (!task.recurring) {
+        await this.cronService.updateTask(task.id, { enabled: false }).catch(() => {
+          // Task may have been deleted
+        })
+      }
 
       return failedRun
     }

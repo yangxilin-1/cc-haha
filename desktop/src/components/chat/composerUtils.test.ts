@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  filterSlashCommands,
+  findAtTrigger,
   findSlashToken,
+  getFallbackSlashCommands,
   insertSlashTrigger,
   mergeSlashCommands,
+  replaceAtToken,
   replaceSlashCommand,
 } from './composerUtils'
 
@@ -28,15 +32,15 @@ describe('composerUtils', () => {
     })
   })
 
-  it('merges fallback commands so built-in entries like /clear remain visible', () => {
+  it('merges fallback commands so built-in entries remain visible', () => {
     expect(
       mergeSlashCommands([
         { name: 'help', description: '' },
       ]),
     ).toEqual(
       expect.arrayContaining([
-        { name: 'help', description: 'Show available commands' },
-        { name: 'clear', description: 'Clear conversation history' },
+        { name: 'help', description: '' },
+        expect.objectContaining({ name: 'explain' }),
       ]),
     )
   })
@@ -44,12 +48,36 @@ describe('composerUtils', () => {
   it('keeps server-provided descriptions when they exist', () => {
     expect(
       mergeSlashCommands([
-        { name: 'clear', description: 'Server description' },
+        { name: 'explain', description: 'Server description' },
       ]),
     ).toEqual(
       expect.arrayContaining([
-        { name: 'clear', description: 'Server description' },
+        expect.objectContaining({ name: 'explain', description: 'Server description' }),
       ]),
     )
+  })
+
+  it('switches fallback slash commands between Chinese and English', () => {
+    expect(getFallbackSlashCommands('en', 'chat').map((command) => command.name)).toEqual([
+      'explain',
+      'summarize',
+    ])
+    expect(getFallbackSlashCommands('zh', 'chat').map((command) => command.name)).toEqual([
+      '解释',
+      '总结',
+    ])
+  })
+
+  it('filters slash commands by localized aliases', () => {
+    expect(filterSlashCommands(getFallbackSlashCommands('zh', 'code'), 'review')[0]?.name).toBe('审查')
+    expect(filterSlashCommands(getFallbackSlashCommands('en', 'code'), '审查')[0]?.name).toBe('review')
+  })
+
+  it('finds and replaces @ mention tokens', () => {
+    expect(findAtTrigger('@Com', 4)).toEqual({ start: 0, filter: 'Com' })
+    expect(replaceAtToken('@Com', 4, 'Computer Use')).toEqual({
+      value: '@ Computer Use ',
+      cursorPos: 15,
+    })
   })
 })

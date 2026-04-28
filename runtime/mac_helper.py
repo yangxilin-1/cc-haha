@@ -391,6 +391,40 @@ def installed_apps() -> list[dict[str, Any]]:
     return sorted(results.values(), key=lambda item: item["displayName"].lower())
 
 
+def app_icon_data_url(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        image = NSWorkspace.sharedWorkspace().iconForFile_(path)
+        if not image:
+            return ""
+        tiff = image.TIFFRepresentation()
+        if not tiff:
+            return ""
+        pil_image = Image.open(BytesIO(bytes(tiff)))
+        pil_image.thumbnail((48, 48), Image.Resampling.LANCZOS)
+        if pil_image.mode != "RGBA":
+            pil_image = pil_image.convert("RGBA")
+        output = BytesIO()
+        pil_image.save(output, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
+    except Exception:
+        return ""
+
+
+def app_icons(apps: list[dict[str, Any]]) -> dict[str, str]:
+    icons: dict[str, str] = {}
+    for item in apps[:80]:
+        bundle_id = str(item.get("bundleId") or "").strip()
+        path = str(item.get("path") or "").strip()
+        if not bundle_id or not path:
+            continue
+        icon = app_icon_data_url(path)
+        if icon:
+            icons[bundle_id] = icon
+    return icons
+
+
 def running_apps() -> list[dict[str, Any]]:
     apps = []
     seen = set()
@@ -745,6 +779,9 @@ def main() -> int:
             return 0
         if command == "list_installed_apps":
             json_output({"ok": True, "result": installed_apps()})
+            return 0
+        if command == "get_app_icons":
+            json_output({"ok": True, "result": app_icons(list(payload.get("apps") or []))})
             return 0
         if command == "list_running_apps":
             json_output({"ok": True, "result": running_apps()})

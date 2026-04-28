@@ -299,12 +299,13 @@ describe('Business Flow: Agent Management', () => {
     expect(status).toBe(201)
   })
 
-  it('should list both created agents in CRUD detail endpoint while shared list stays source-based', async () => {
+  it('should list user agents as active and mark same-name built-ins as overridden', async () => {
     const { data } = await api('GET', '/api/agents')
     expect(data.activeAgents.length).toBeGreaterThan(0)
     expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'security-auditor')).toBe(false)
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-writer')).toBe(false)
+    expect(data.activeAgents.some((agent: any) => agent.agentType === 'security-auditor' && agent.source === 'userSettings')).toBe(true)
+    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-writer' && agent.source === 'userSettings')).toBe(true)
+    expect(data.allAgents.some((agent: any) => agent.agentType === 'security-auditor' && agent.source === 'built-in' && agent.overriddenBy === 'userSettings')).toBe(true)
 
     const securityAuditor = await api('GET', '/api/agents/security-auditor')
     const testWriter = await api('GET', '/api/agents/test-writer')
@@ -345,16 +346,17 @@ describe('Business Flow: Agent Management', () => {
     expect(status).toBe(404)
   })
 
-  it('should keep deleted agent out of shared active list while built-ins remain', async () => {
+  it('should restore same-name built-in after deleting a user override', async () => {
     const { status } = await api('DELETE', '/api/agents/test-writer')
     expect([200, 204]).toContain(status)
 
     const { data } = await api('GET', '/api/agents')
-    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-writer')).toBe(false)
+    expect(data.activeAgents.some((agent: any) => agent.agentType === 'test-writer' && agent.source === 'built-in')).toBe(true)
     expect(data.activeAgents.some((agent: any) => agent.source === 'built-in')).toBe(true)
 
-    const deleted = await api('GET', '/api/agents/test-writer')
-    expect(deleted.status).toBe(404)
+    const restored = await api('GET', '/api/agents/test-writer')
+    expect(restored.status).toBe(200)
+    expect(restored.data.agent.name).toBe('test-writer')
   })
 
   it('should persist agent to YAML file on disk', async () => {

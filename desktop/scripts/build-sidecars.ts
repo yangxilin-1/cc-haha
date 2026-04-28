@@ -26,13 +26,11 @@ if (scanExit !== 0) {
 
 await mkdir(binariesDir, { recursive: true })
 
-// 单一合并 sidecar：server / cli 共享一份 bun runtime + 共享依赖代码。
-// 调用方（Tauri lib.rs / conversationService）通过第一个 positional 参数
-// 选择 'server' 或 'cli' 模式，详见 desktop/sidecars/claude-sidecar.ts。
+// 单一桌面 sidecar：只保留 server / adapters 两种原生桌面模式。
 await compileExecutable({
-  entrypoint: path.join(desktopRoot, 'sidecars/claude-sidecar.ts'),
-  outfileBase: path.join(binariesDir, `claude-sidecar-${targetTriple}`),
-  productName: 'Claude Code Sidecar',
+  entrypoint: path.join(desktopRoot, 'sidecars/ycode-sidecar.ts'),
+  outfileBase: path.join(binariesDir, `ycode-sidecar-${targetTriple}`),
+  productName: 'Ycode Desktop Sidecar',
   bunTarget,
 })
 
@@ -142,7 +140,7 @@ async function compileExecutable({
       autoloadPackageJson: true,
       windows: {
         title: productName,
-        publisher: 'Claude Code',
+        publisher: 'Ycode',
         description: productName,
         hideConsole: true,
       },

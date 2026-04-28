@@ -43,6 +43,7 @@ import type {
   DisplayGeometry,
   InstalledApp,
   ScreenshotResult,
+  UiElementInfo,
 } from "./executor.js";
 import { isSystemKeyCombo } from "./keyBlocklist.js";
 import { validateClickTarget } from "./pixelCompare.js";
@@ -67,6 +68,129 @@ import type {
  * so it's always a valid frontmost.
  */
 const FINDER_BUNDLE_ID = "com.apple.finder";
+
+type AppIdentity = {
+  bundleId: string;
+  displayName: string;
+};
+
+const WINDOWS_HOST_APP_KEYS = new Set([
+  "ycode",
+  "ycodedesktop",
+  // Windows builds may still expose the pre-rebrand Tauri binary name.
+  "claudecodedesktop",
+]);
+const COMPUTER_WIDE_ACCESS_BUNDLE_ID = "*";
+
+function normalizeHostAppKey(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/\.exe$/i, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function isHostApp(
+  app: AppIdentity,
+  hostBundleId: string,
+  platform: "darwin" | "win32",
+): boolean {
+  if (sameAppLookupValue(app.bundleId, hostBundleId)) return true;
+  if (platform !== "win32") return false;
+
+  return [app.bundleId, app.displayName]
+    .map(normalizeHostAppKey)
+    .some((key) => WINDOWS_HOST_APP_KEYS.has(key));
+}
+
+function findGrantForApp(
+  app: AppIdentity,
+  grants: readonly AppGrant[],
+): AppGrant | undefined {
+  const universal = grants.find(
+    (grant) => grant.bundleId === COMPUTER_WIDE_ACCESS_BUNDLE_ID,
+  );
+  if (universal) return universal;
+  const exact = grants.find((grant) =>
+    sameAppLookupValue(grant.bundleId, app.bundleId),
+  );
+  if (exact) return exact;
+  return (
+    findRequestedApp(app.bundleId, grants) ??
+    findRequestedApp(app.displayName, grants)
+  );
+}
+
+type UiElementDescriptor = Pick<
+  UiElementInfo,
+  "bundleId" | "displayName" | "bounds"
+> & {
+  kind?: string;
+};
+
+function decodeBase64UrlJson(value: string): unknown {
+  const padded = value.padEnd(value.length + ((4 - (value.length % 4)) % 4), "=");
+  return JSON.parse(
+    Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString(
+      "utf8",
+    ),
+  );
+}
+
+function parseUiElementDescriptor(
+  elementId: string,
+): UiElementDescriptor | Error {
+  const separator = elementId.indexOf(":");
+  if (separator <= 0 || separator === elementId.length - 1) {
+    return new Error("element_id must be an id returned by observe_desktop.");
+  }
+
+  try {
+    const parsed = decodeBase64UrlJson(elementId.slice(separator + 1));
+    if (typeof parsed !== "object" || parsed === null) {
+      return new Error("element_id payload is invalid.");
+    }
+    const record = parsed as Record<string, unknown>;
+    const bounds = record.bounds;
+    if (
+      typeof record.bundleId !== "string" ||
+      typeof record.displayName !== "string" ||
+      typeof bounds !== "object" ||
+      bounds === null
+    ) {
+      return new Error("element_id payload is missing target app metadata.");
+    }
+    const b = bounds as Record<string, unknown>;
+    if (
+      typeof b.x !== "number" ||
+      typeof b.y !== "number" ||
+      typeof b.width !== "number" ||
+      typeof b.height !== "number"
+    ) {
+      return new Error("element_id payload is missing bounds metadata.");
+    }
+    return {
+      kind: typeof record.kind === "string" ? record.kind : undefined,
+      bundleId: record.bundleId,
+      displayName: record.displayName,
+      bounds: {
+        x: b.x,
+        y: b.y,
+        width: b.width,
+        height: b.height,
+      },
+    };
+  } catch {
+    return new Error("element_id could not be decoded.");
+  }
+}
+
+function uiElementCenter(element: UiElementDescriptor): { x: number; y: number } {
+  return {
+    x: Math.round(element.bounds.x + element.bounds.width / 2),
+    y: Math.round(element.bounds.y + element.bounds.height / 2),
+  };
+}
 
 /**
  * Categorical error classes for the cu_tool_call telemetry event. Never
@@ -409,6 +533,57 @@ async function syncClipboardStash(
   }
 }
 
+async function shouldSkipPrepareForAction(
+  adapter: ComputerUseHostAdapter,
+  actionKind: CuActionKind,
+): Promise<boolean> {
+  if (
+    adapter.executor.capabilities.platform !== "win32" ||
+    actionKind === "keyboard"
+  ) {
+    return false;
+  }
+
+  // Windows cannot make the app click-through like macOS. If Ycode's own
+  // permission/dialog window is frontmost and the next action is a mouse
+  // action, keep it frontmost so the model can dismiss it. Keyboard actions
+  // never skip prepare: they must be moved to the allowed target app.
+  const frontmost = await adapter.executor.getFrontmostApp();
+  return frontmost
+    ? isHostApp(
+        frontmost,
+        adapter.executor.capabilities.hostBundleId,
+        adapter.executor.capabilities.platform,
+      )
+    : false;
+}
+
+async function recoverKeyboardFocusFromHost(
+  adapter: ComputerUseHostAdapter,
+  overrides: ComputerUseOverrides,
+): Promise<FrontmostApp | null> {
+  if (adapter.executor.capabilities.platform !== "win32") return null;
+
+  const keyboardTargets = overrides.allowedApps.filter((grant) =>
+    tierSatisfies(grant.tier, "keyboard"),
+  );
+  for (const target of keyboardTargets) {
+    try {
+      const opened = await adapter.executor.openApp(target.bundleId);
+      const frontmost = opened.frontmostApp ?? (await adapter.executor.getFrontmostApp());
+      if (!frontmost) continue;
+      const grant = findGrantForApp(frontmost, overrides.allowedApps);
+      if (grant && tierSatisfies(grant.tier, "keyboard")) {
+        return frontmost;
+      }
+    } catch {
+      // Try the next granted app. The normal frontmost gate below will still
+      // fail closed if none can be activated.
+    }
+  }
+  return null;
+}
+
 /** Every click/type/key/scroll/drag/move_mouse runs through this before
  * touching the executor. Returns null on pass, error-result on block.
  * Any throw inside → caught by handleToolCall's outer try → tool error. */
@@ -423,29 +598,44 @@ async function runInputActionGates(
   // popped up between prepare and action) rather than a normal-path blocker.
   // ALL grant tiers stay visible — visibility is the baseline (tier "read").
   if (subGates.hideBeforeAction) {
-    const hidden = await adapter.executor.prepareForAction(
-      overrides.allowedApps.map((a) => a.bundleId),
-      overrides.selectedDisplayId,
-    );
-    // Empty-check so we don't spam the callback on every action when nothing
-    // was hidden (the common case after the first action of a turn).
-    if (hidden.length > 0) {
-      overrides.onAppsHidden?.(hidden);
+    const skipPrepare = await shouldSkipPrepareForAction(adapter, actionKind);
+    if (!skipPrepare) {
+      const hidden = await adapter.executor.prepareForAction(
+        overrides.allowedApps.map((a) => a.bundleId),
+        overrides.selectedDisplayId,
+      );
+      // Empty-check so we don't spam the callback on every action when nothing
+      // was hidden (the common case after the first action of a turn).
+      if (hidden.length > 0) {
+        overrides.onAppsHidden?.(hidden);
+      }
     }
   }
 
   // Frontmost gate. Check FRESH on every call.
-  const frontmost = await adapter.executor.getFrontmostApp();
+  let frontmost = await adapter.executor.getFrontmostApp();
 
-  const tierByBundleId = new Map(
-    overrides.allowedApps.map((a) => [a.bundleId, a.tier] as const),
-  );
+  const { hostBundleId, platform } = adapter.executor.capabilities;
+  if (
+    frontmost &&
+    actionKind === "keyboard" &&
+    isHostApp(frontmost, hostBundleId, platform)
+  ) {
+    const recoveredFrontmost = await recoverKeyboardFocusFromHost(
+      adapter,
+      overrides,
+    );
+    if (recoveredFrontmost) {
+      frontmost = recoveredFrontmost;
+    }
+  }
 
   // After handleToolCall's tier backfill, every grant has a concrete tier —
   // .get() returning undefined means the app is not in the allowlist at all.
-  const frontmostTier = frontmost
-    ? tierByBundleId.get(frontmost.bundleId)
+  const frontmostGrant = frontmost
+    ? findGrantForApp(frontmost, overrides.allowedApps)
     : undefined;
+  const frontmostTier = frontmostGrant?.tier;
 
   // Clipboard guard. Per-action, not per-tool-call — runs for every sub-action
   // inside computer_batch and teach_step/teach_batch, so clicking into a
@@ -462,8 +652,6 @@ async function runInputActionGates(
     // will land somewhere and PixelCompare catches staleness.
     return null;
   }
-
-  const { hostBundleId } = adapter.executor.capabilities;
 
   if (frontmostTier !== undefined) {
     if (tierSatisfies(frontmostTier, actionKind)) return null;
@@ -512,12 +700,12 @@ async function runInputActionGates(
     );
   }
   // Finder is never-hide, always allowed.
-  if (frontmost.bundleId === FINDER_BUNDLE_ID) return null;
+  if (isFinderApp(frontmost.bundleId)) return null;
 
-  if (frontmost.bundleId === hostBundleId) {
+  if (isHostApp(frontmost, hostBundleId, platform)) {
     if (actionKind !== "keyboard") {
-      // mouse and mouse_full are both click events — click-through works.
-      // We're click-through (executor's withClickThrough). Pass.
+      // Mouse actions against the host are allowed so blocking Computer Use
+      // permission dialogs can be dismissed. Keyboard remains blocked below.
       return null;
     }
     // Keyboard safety net — defocus (prepareForAction step B) should have
@@ -565,14 +753,21 @@ async function runHitTestGate(
   if (!target) return null; // desktop / nothing under point / platform no-op
 
   // Finder (desktop, file dialogs) is always clickable — same exemption as
-  // runInputActionGates. Our own overlay is filtered by Swift (pid != self).
-  if (target.bundleId === FINDER_BUNDLE_ID) return null;
+  // runInputActionGates. Host windows are also mouse-clickable so the model can
+  // dismiss Computer Use permission dialogs that block the target app.
+  if (isFinderApp(target.bundleId)) return null;
+  if (
+    isHostApp(
+      target,
+      adapter.executor.capabilities.hostBundleId,
+      adapter.executor.capabilities.platform,
+    )
+  ) {
+    return null;
+  }
 
-  const tierByBundleId = new Map(
-    overrides.allowedApps.map((a) => [a.bundleId, a.tier] as const),
-  );
-
-  if (!tierByBundleId.has(target.bundleId)) {
+  const targetGrant = findGrantForApp(target, overrides.allowedApps);
+  if (!targetGrant) {
     // Not in the allowlist at all. The frontmost check would catch this if
     // the target were frontmost, but here a different app is in front. This
     // is the "something popped up" edge case — a new window appeared between
@@ -585,7 +780,7 @@ async function runHitTestGate(
     );
   }
 
-  const targetTier = tierByBundleId.get(target.bundleId);
+  const targetTier = targetGrant.tier;
 
   // Frontmost-based sync (runInputActionGates) misses the case where
   // the click lands on a NON-FRONTMOST click-tier window. Re-sync by
@@ -619,6 +814,64 @@ async function runHitTestGate(
       (isBrowser
         ? "Use the Claude-in-Chrome MCP for browser interaction."
         : "Ask the user to take any actions in this app themselves.") +
+      TIER_ANTI_SUBVERSION,
+    "tier_insufficient",
+  );
+}
+
+function runUiElementTargetGate(
+  adapter: ComputerUseHostAdapter,
+  overrides: ComputerUseOverrides,
+  element: UiElementDescriptor,
+  actionKind: CuActionKind,
+): CuCallToolResult | null {
+  if (isFinderApp(element.bundleId)) return null;
+  if (
+    isHostApp(
+      element,
+      adapter.executor.capabilities.hostBundleId,
+      adapter.executor.capabilities.platform,
+    )
+  ) {
+    if (actionKind !== "keyboard") return null;
+    return errorResult(
+      "Claude's own window is the target element. Typing into it is blocked.",
+      "state_conflict",
+    );
+  }
+
+  const targetTier = findGrantForApp(element, overrides.allowedApps)?.tier;
+  if (targetTier === undefined) {
+    return errorResult(
+      `"${element.displayName}" is not in the allowed applications. ` +
+        "Call request_access before interacting with this element.",
+      "app_not_granted",
+    );
+  }
+
+  if (tierSatisfies(targetTier, actionKind)) return null;
+
+  if (targetTier === "read") {
+    return errorResult(
+      `"${element.displayName}" is granted at tier "read" — visible in ` +
+        "screenshots and observe_desktop only, no clicks or typing." +
+        TIER_ANTI_SUBVERSION,
+      "tier_insufficient",
+    );
+  }
+
+  if (actionKind === "keyboard") {
+    return errorResult(
+      `"${element.displayName}" is granted at tier "click" — typing requires ` +
+        `tier "full".` +
+        TIER_ANTI_SUBVERSION,
+      "tier_insufficient",
+    );
+  }
+
+  return errorResult(
+    `"${element.displayName}" is granted at tier "click" — this element ` +
+      `action requires tier "full". Plain click_ui_element is allowed.` +
       TIER_ANTI_SUBVERSION,
     "tier_insufficient",
   );
@@ -772,47 +1025,289 @@ function looksLikeBundleId(s: string): boolean {
   return REVERSE_DNS_RE.test(s) && !s.includes(" ");
 }
 
+type AppLookupEntry = Pick<InstalledApp, "bundleId" | "displayName"> & {
+  path?: string;
+};
+
+function hasComputerWideAccess(grants: readonly Pick<AppGrant, "bundleId">[]): boolean {
+  return grants.some((grant) => grant.bundleId === COMPUTER_WIDE_ACCESS_BUNDLE_ID);
+}
+
+const APP_NAME_ALIASES: readonly [string, readonly string[]][] = [
+  ["qq音乐", ["qqmusic", "qq music", "qq音樂", "tencent qqmusic"]],
+  ["微信", ["wechat", "weixin"]],
+  ["企业微信", ["wxwork", "wecom", "wecom work"]],
+  ["钉钉", ["dingtalk", "ding talk"]],
+  ["网易云音乐", ["cloudmusic", "netease cloud music", "netease music"]],
+];
+
+function normalizeAppLookupKey(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function appIdentityKey(value: string | undefined): string {
+  const raw = String(value ?? "").trim();
+  return normalizeAppLookupKey(raw) || raw.toLowerCase();
+}
+
+function isFinderApp(bundleId: string | undefined): boolean {
+  return sameAppLookupValue(bundleId, FINDER_BUNDLE_ID);
+}
+
+function isSentinelApp(bundleId: string | undefined): boolean {
+  if (!bundleId) return false;
+  return [...SENTINEL_BUNDLE_IDS].some((candidate) =>
+    sameAppLookupValue(candidate, bundleId),
+  );
+}
+
+function sameAppLookupValue(a: string | undefined, b: string | undefined): boolean {
+  const av = String(a ?? "").trim();
+  const bv = String(b ?? "").trim();
+  if (av && bv && av === bv) return true;
+  const ak = normalizeAppLookupKey(av);
+  const bk = normalizeAppLookupKey(bv);
+  return Boolean(ak && bk && ak === bk);
+}
+
+function bundleIdSetHas(
+  bundleIds: ReadonlySet<string>,
+  bundleId: string | undefined,
+): boolean {
+  if (!bundleId) return false;
+  if (bundleIds.has(bundleId)) return true;
+  const key = appIdentityKey(bundleId);
+  return Boolean(
+    key &&
+      [...bundleIds].some((candidate) =>
+        sameAppLookupValue(candidate, bundleId),
+      ),
+  );
+}
+
+function fileStem(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const basename = value.replace(/\\/g, "/").split("/").pop();
+  if (!basename) return undefined;
+  return basename.replace(/\.[^.]+$/, "");
+}
+
+function aliasKeysFor(key: string): Set<string> {
+  const keys = new Set<string>([key]);
+  for (const [name, aliases] of APP_NAME_ALIASES) {
+    const group = [name, ...aliases].map(normalizeAppLookupKey);
+    if (!group.includes(key)) continue;
+    for (const alias of group) {
+      if (alias) keys.add(alias);
+    }
+  }
+  return keys;
+}
+
+function lookupKeysForText(value: string | undefined): Set<string> {
+  const normalized = normalizeAppLookupKey(value ?? "");
+  if (!normalized) return new Set();
+  return aliasKeysFor(normalized);
+}
+
+function lookupKeysForApp(app: AppLookupEntry): Set<string> {
+  const keys = new Set<string>();
+  for (const value of [
+    app.bundleId,
+    app.displayName,
+    fileStem(app.path),
+    app.displayName.replace(/\.exe$/i, ""),
+  ]) {
+    for (const key of lookupKeysForText(value)) {
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
+function findRequestedApp<T extends AppLookupEntry>(
+  requested: string,
+  apps: T[],
+): T | undefined {
+  if (looksLikeBundleId(requested)) {
+    const exactBundle = apps.find((app) =>
+      sameAppLookupValue(app.bundleId, requested),
+    );
+    if (exactBundle) return exactBundle;
+  }
+
+  const requestedKeys = lookupKeysForText(requested);
+  if (requestedKeys.size === 0) return undefined;
+
+  const indexed = apps.map((app) => ({
+    app,
+    keys: lookupKeysForApp(app),
+  }));
+
+  for (const requestedKey of requestedKeys) {
+    const exact = indexed.find(({ keys }) => keys.has(requestedKey));
+    if (exact) return exact.app;
+  }
+
+  for (const requestedKey of requestedKeys) {
+    if (requestedKey.length < 3) continue;
+    const partial = indexed.find(({ keys }) =>
+      [...keys].some(
+        (appKey) =>
+          appKey.length >= 3 &&
+          appKey.includes(requestedKey),
+      ),
+    );
+    if (partial) return partial.app;
+  }
+
+  return undefined;
+}
+
+const MUSIC_APP_CANDIDATES = [
+  "QQ音乐",
+  "QQMusic",
+  "网易云音乐",
+  "cloudmusic",
+];
+
+function instructionMentionsApp(instruction: string, appName: string): boolean {
+  const instructionKey = normalizeAppLookupKey(instruction);
+  const appKeys = lookupKeysForText(appName);
+  return [...appKeys].some((key) => key && instructionKey.includes(key));
+}
+
+function extractMusicQuery(
+  instruction: string,
+  explicitQuery: unknown,
+): string | undefined {
+  if (typeof explicitQuery === "string" && explicitQuery.trim()) {
+    return explicitQuery.trim();
+  }
+
+  const compact = instruction
+    .replace(/[“”"']/g, "")
+    .replace(/[《》]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const keywordPatterns = [/播放一下?/u, /播一下/u, /播放/u, /\bplay\b/iu];
+  for (const pattern of keywordPatterns) {
+    const match = pattern.exec(compact);
+    if (!match || match.index === undefined) continue;
+    const after = compact.slice(match.index + match[0].length);
+    const cleaned = after
+      .replace(/[，。,.!?！？].*$/u, "")
+      .replace(/^(歌曲|音乐|这首歌|一下|下)\s*/u, "")
+      .trim();
+    if (cleaned) return cleaned;
+  }
+  return undefined;
+}
+
+type ResolvedDesktopIntent =
+  | {
+      kind: "play_music";
+      app: AppGrant;
+      query: string;
+      instruction: string;
+    }
+  | { kind: "unsupported"; instruction: string; guidance: string }
+  | Error;
+
+function resolveDesktopIntent(
+  args: Record<string, unknown>,
+  allowedApps: readonly AppGrant[],
+): ResolvedDesktopIntent {
+  const instruction = requireString(args, "instruction");
+  if (instruction instanceof Error) return instruction;
+
+  const explicitIntent =
+    typeof args.intent === "string" ? normalizeAppLookupKey(args.intent) : "";
+  const wantsMusic =
+    explicitIntent === "playmusic" ||
+    explicitIntent === "music" ||
+    /播放|播一下|\bplay\b/iu.test(instruction);
+
+  if (!wantsMusic) {
+    return {
+      kind: "unsupported",
+      instruction,
+      guidance:
+        "No direct fast path matched this instruction yet. Use observe_desktop/screenshot and regular Computer Use tools as fallback.",
+    };
+  }
+
+  const requestedApp =
+    typeof args.app === "string" && args.app.trim()
+      ? args.app.trim()
+      : MUSIC_APP_CANDIDATES.find((candidate) =>
+          instructionMentionsApp(instruction, candidate),
+        );
+  const app =
+    requestedApp !== undefined
+      ? findRequestedApp(requestedApp, [...allowedApps])
+      : MUSIC_APP_CANDIDATES.map((candidate) =>
+          findRequestedApp(candidate, [...allowedApps]),
+        ).find(Boolean);
+
+  if (!app) {
+    return new Error(
+      "No granted music application matched this instruction. Call request_access for QQ音乐 or pass app explicitly.",
+    );
+  }
+
+  const query = extractMusicQuery(instruction, args.query);
+  if (!query) {
+    return new Error(
+      "Could not determine what to play. Pass query, e.g. query=\"晴天\".",
+    );
+  }
+
+  return { kind: "play_music", app, query, instruction };
+}
+
 function resolveRequestedApps(
   requestedNames: string[],
   installed: InstalledApp[],
   alreadyGrantedBundleIds: ReadonlySet<string>,
 ): ResolvedAppRequest[] {
-  const byLowerDisplayName = new Map<string, InstalledApp>();
-  const byBundleId = new Map<string, InstalledApp>();
-  for (const app of installed) {
-    byBundleId.set(app.bundleId, app);
-    // Last write wins on collisions. Ambiguous-name handling (multiple
-    // candidates in the dialog) is plan-documented but deferred — the
-    // InstalledApps enumerator dedupes by bundle ID, so true display-name
-    // collisions are rare. TODO(chicago, post-P1): surface all candidates.
-    byLowerDisplayName.set(app.displayName.toLowerCase(), app);
-  }
+  const resolvedRequests: ResolvedAppRequest[] = [];
+  const seenResolved = new Set<string>();
+  const seenUnresolved = new Set<string>();
 
-  return requestedNames.map((requested): ResolvedAppRequest => {
-    let resolved: InstalledApp | undefined;
-    if (looksLikeBundleId(requested)) {
-      resolved = byBundleId.get(requested);
-    }
-    if (!resolved) {
-      resolved = byLowerDisplayName.get(requested.toLowerCase());
-    }
+  for (const requested of requestedNames) {
+    const resolved = findRequestedApp(requested, installed);
     const bundleId = resolved?.bundleId;
+    if (bundleId) {
+      const resolvedKey = appIdentityKey(bundleId);
+      if (seenResolved.has(resolvedKey)) continue;
+      seenResolved.add(resolvedKey);
+    } else {
+      const requestedKey = appIdentityKey(requested);
+      if (seenUnresolved.has(requestedKey)) continue;
+      seenUnresolved.add(requestedKey);
+    }
     // When unresolved AND the requested string looks like a bundle ID, use it
     // directly for tier lookup (e.g. "company.thebrowser.Browser" with Arc not
     // installed — the reverse-DNS string won't match any display-name substring).
     const bundleIdCandidate =
       bundleId ?? (looksLikeBundleId(requested) ? requested : undefined);
-    return {
+    resolvedRequests.push({
       requestedName: requested,
       resolved,
-      isSentinel: bundleId ? SENTINEL_BUNDLE_IDS.has(bundleId) : false,
-      alreadyGranted: bundleId ? alreadyGrantedBundleIds.has(bundleId) : false,
+      isSentinel: isSentinelApp(bundleId),
+      alreadyGranted: bundleId ? bundleIdSetHas(alreadyGrantedBundleIds, bundleId) : false,
       proposedTier: getDefaultTierForApp(
         bundleIdCandidate,
         resolved?.displayName ?? requested,
       ),
-    };
-  });
+    });
+  }
+
+  return resolvedRequests;
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +1417,45 @@ async function handleRequestAccess(
     overrides.selectedDisplayId,
   );
 
+  if (hasComputerWideAccess(overrides.allowedApps)) {
+    const universalGrant = overrides.allowedApps.find((grant) =>
+      sameAppLookupValue(grant.bundleId, COMPUTER_WIDE_ACCESS_BUNDLE_ID),
+    );
+    const now = Date.now();
+    const autoGranted: AppGrant[] = [
+      ...(universalGrant ? [universalGrant] : []),
+      ...skipDialogGrants,
+      ...needDialog
+        .filter((r) => r.resolved)
+        .map((r) => ({
+          bundleId: r.resolved!.bundleId,
+          displayName: r.resolved!.displayName,
+          grantedAt: now,
+          tier: r.proposedTier,
+          ...(r.resolved!.iconDataUrl ? { iconDataUrl: r.resolved!.iconDataUrl } : {}),
+        })),
+    ];
+    return okJson(
+      {
+        granted: autoGranted,
+        denied: needDialog
+          .filter((r) => !r.resolved)
+          .map((r) => ({
+            bundleId: r.requestedName,
+            reason: "not_installed" as const,
+          })),
+        computerWideAccess: true,
+        guidance:
+          "Computer-wide access is enabled in Settings, so no per-app approval dialog was shown.",
+        screenshotFiltering: adapter.executor.capabilities.screenshotFiltering,
+      },
+      {
+        granted_count: autoGranted.length,
+        denied_count: needDialog.filter((r) => !r.resolved).length,
+      },
+    );
+  }
+
   let dialogGranted: AppGrant[] = [];
   let dialogDenied: Array<{
     bundleId: string;
@@ -957,7 +1491,7 @@ async function handleRequestAccess(
   // Chrome in the dialog, don't explain Chrome's tier.
   const grantedBundleIds = new Set(allGranted.map((g) => g.bundleId));
   const grantedTieredApps = tieredApps.filter((t) =>
-    grantedBundleIds.has(t.bundleId),
+    bundleIdSetHas(grantedBundleIds, t.bundleId),
   );
   // Best-effort — grants are already persisted by wrappedPermissionHandler;
   // a listDisplays/findWindowDisplays failure (monitor hot-unplug, NAPI
@@ -1035,11 +1569,13 @@ async function buildWindowLocations(
   const grantedBundleIds = granted.map((g) => g.bundleId);
   const windowLocs = await adapter.executor.findWindowDisplays(grantedBundleIds);
   const displayById = new Map(displays.map((d) => [d.displayId, d]));
-  const idsByBundle = new Map(windowLocs.map((w) => [w.bundleId, w.displayIds]));
+  const idsByBundle = new Map(
+    windowLocs.map((w) => [appIdentityKey(w.bundleId), w.displayIds]),
+  );
 
   const out = [];
   for (const g of granted) {
-    const displayIds = idsByBundle.get(g.bundleId);
+    const displayIds = idsByBundle.get(appIdentityKey(g.bundleId));
     if (!displayIds || displayIds.length === 0) continue;
     out.push({
       bundleId: g.bundleId,
@@ -1123,7 +1659,7 @@ async function buildAccessRequest(
   const userDenied: Array<{ requestedName: string; displayName: string }> = [];
   const surviving: typeof afterPolicy = [];
   for (const r of afterPolicy) {
-    if (r.resolved && userDeniedBundleIds.has(r.resolved.bundleId)) {
+    if (r.resolved && bundleIdSetHas(userDeniedBundleIds, r.resolved.bundleId)) {
       userDenied.push({
         requestedName: r.requestedName,
         displayName: r.resolved.displayName,
@@ -1175,8 +1711,8 @@ async function buildAccessRequest(
     .map((r) => {
       // Reuse the existing grant (preserving grantedAt + tier) rather than
       // synthesizing a new one — keeps Settings-page "Granted 3m ago" honest.
-      const existing = allowedApps.find(
-        (g) => g.bundleId === r.resolved!.bundleId,
+      const existing = allowedApps.find((g) =>
+        sameAppLookupValue(g.bundleId, r.resolved!.bundleId),
       );
       return (
         existing ?? {
@@ -1485,7 +2021,7 @@ async function handleRequestTeachAccess(
 
   const grantedBundleIds = new Set(granted.map((g) => g.bundleId));
   const grantedTieredApps = tieredApps.filter((t) =>
-    grantedBundleIds.has(t.bundleId),
+    bundleIdSetHas(grantedBundleIds, t.bundleId),
   );
 
   return okJson(
@@ -1921,8 +2457,12 @@ async function buildHiddenNote(
 ): Promise<string | undefined> {
   if (hiddenSinceLastSeen.length === 0) return undefined;
   const running = await adapter.executor.listRunningApps();
-  const nameOf = new Map(running.map((a) => [a.bundleId, a.displayName]));
-  const names = hiddenSinceLastSeen.map((id) => nameOf.get(id) ?? id);
+  const nameOf = new Map(
+    running.map((a) => [appIdentityKey(a.bundleId), a.displayName]),
+  );
+  const names = hiddenSinceLastSeen.map(
+    (id) => nameOf.get(appIdentityKey(id)) ?? id,
+  );
   const list = names.map((n) => `"${n}"`).join(", ");
   const one = names.length === 1;
   return (
@@ -2039,7 +2579,9 @@ async function handleScreenshot(
     // set has changed since the display was last resolved. Prevents the
     // resolver yanking the display on every screenshot.
     const allowedBundleIds = overrides.allowedApps.map((a) => a.bundleId);
-    const currentAppSetKey = allowedBundleIds.slice().sort().join(",");
+    const currentAppSetKey = [...new Set(allowedBundleIds.map(appIdentityKey))]
+      .sort()
+      .join(",");
     const appSetChanged = currentAppSetKey !== overrides.displayResolvedForApps;
     const autoResolve = !overrides.displayPinnedByModel && appSetChanged;
 
@@ -2201,6 +2743,54 @@ async function handleScreenshot(
     ],
     // Piggybacked for serverDef.ts to stash on InternalServerContext.
     screenshot: shot,
+  };
+}
+
+async function handleObserveDesktop(
+  adapter: ComputerUseHostAdapter,
+  args: Record<string, unknown>,
+  overrides: ComputerUseOverrides,
+  subGates: CuSubGates,
+): Promise<CuCallToolResult> {
+  let maxElements = 120;
+  if (args.max_elements !== undefined) {
+    if (
+      typeof args.max_elements !== "number" ||
+      !Number.isInteger(args.max_elements) ||
+      args.max_elements < 1 ||
+      args.max_elements > 300
+    ) {
+      return errorResult(
+        "max_elements must be an integer between 1 and 300",
+        "bad_args",
+      );
+    }
+    maxElements = args.max_elements;
+  }
+
+  const shotResult = await handleScreenshot(adapter, overrides, subGates);
+  if (shotResult.isError) return shotResult;
+
+  const allowedBundleIds = overrides.allowedApps.map((g) => g.bundleId);
+  const observation = await adapter.executor.observeDesktop({
+    allowedBundleIds,
+    displayId: shotResult.screenshot?.displayId ?? overrides.selectedDisplayId,
+    maxElements,
+  });
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          ...observation,
+          note:
+            "Use click_ui_element or type_into_ui_element with element_id values when possible; use coordinate tools only as fallback.",
+        }),
+      },
+      ...shotResult.content,
+    ],
+    screenshot: shotResult.screenshot,
   };
 }
 
@@ -2760,22 +3350,48 @@ async function handleOpenApplication(
 
   // Resolve display-name → bundle ID. Same logic as request_access.
   const allowed = new Set(overrides.allowedApps.map((g) => g.bundleId));
+  const computerWideAccess = hasComputerWideAccess(overrides.allowedApps);
   let targetBundleId: string | undefined;
 
-  if (looksLikeBundleId(app) && allowed.has(app)) {
-    targetBundleId = app;
+  if (looksLikeBundleId(app)) {
+    const directGrant = overrides.allowedApps.find((grant) =>
+      sameAppLookupValue(grant.bundleId, app),
+    );
+    if (directGrant) targetBundleId = directGrant.bundleId;
   } else {
     // Try display name → bundle ID, but ONLY against the allowlist itself.
     // Avoids paying the listInstalledApps() cost on the hot path and is
     // arguably more correct: if the user granted "Slack", the model asking
     // to open "Slack" should match THAT grant.
-    const match = overrides.allowedApps.find(
-      (g) => g.displayName.toLowerCase() === app.toLowerCase(),
-    );
+    const match = findRequestedApp(app, overrides.allowedApps);
     targetBundleId = match?.bundleId;
   }
 
-  if (!targetBundleId || !allowed.has(targetBundleId)) {
+  if (!targetBundleId && computerWideAccess) {
+    const installed = await adapter.executor.listInstalledApps();
+    const match = findRequestedApp(app, installed);
+    targetBundleId = match?.bundleId ?? (looksLikeBundleId(app) ? app : undefined);
+  }
+
+  if (!targetBundleId || !bundleIdSetHas(allowed, targetBundleId)) {
+    if (computerWideAccess && targetBundleId) {
+      const result = await adapter.executor.openApp(targetBundleId);
+      return okJson({
+        opened: result.opened,
+        activated: result.activated,
+        app,
+        targetBundleId: result.targetBundleId,
+        frontmostApp: result.frontmostApp,
+        computerWideAccess: true,
+        ...(result.activated
+          ? {}
+          : {
+              guidance:
+                `The app was opened or located, but Windows did not make it frontmost. ` +
+                `Call observe_desktop/screenshot to inspect the current window, then retry open_application.`,
+            }),
+      });
+    }
     return errorResult(
       `"${app}" is not granted for this session. Call request_access first.`,
       "app_not_granted",
@@ -2786,13 +3402,14 @@ async function handleOpenApplication(
   // what tier "read" enables (you need it on screen to screenshot it). The
   // tier gates on click/type catch any follow-up interaction.
 
-  await adapter.executor.openApp(targetBundleId);
+  const result = await adapter.executor.openApp(targetBundleId);
 
   // On multi-monitor setups, macOS may place the opened window on a monitor
   // the resolver won't pick (e.g. Claude + another allowed app are co-located
   // elsewhere). Nudge the model toward switch_display BEFORE it wastes steps
   // clicking on dock icons. Single-monitor → no hint. listDisplays failure is
   // non-fatal — the hint is advisory.
+  let displayHint: string | undefined;
   if (overrides.onDisplayPinned !== undefined) {
     let displayCount = 1;
     try {
@@ -2801,14 +3418,202 @@ async function handleOpenApplication(
       // hint skipped
     }
     if (displayCount >= 2) {
-      return okText(
-        `Opened "${app}". If it isn't visible in the next screenshot, it may ` +
-          `have opened on a different monitor — use switch_display to check.`,
-      );
+      displayHint =
+        `If it isn't visible in the next screenshot, it may have opened on ` +
+        `a different monitor — use switch_display to check.`;
     }
   }
 
-  return okText(`Opened "${app}".`);
+  if (!result.activated) {
+    const frontmost = result.frontmostApp
+      ? `"${result.frontmostApp.displayName}"`
+      : "no application";
+    const blockedByHost = result.blockedByHost
+      ? " It appears to be blocked by Ycode's own permission/window overlay; use observe_desktop, then click_ui_element or left_click on the approval/close control before continuing."
+      : "";
+    return okJson({
+      opened: result.opened,
+      activated: false,
+      app,
+      targetBundleId: result.targetBundleId,
+      frontmostApp: result.frontmostApp,
+      guidance:
+        `The app was opened or located, but Windows did not make it frontmost. ` +
+        `Current frontmost app is ${frontmost}.` +
+        blockedByHost +
+        ` Call observe_desktop to inspect the blocking window, then retry open_application.` +
+        (displayHint ? ` ${displayHint}` : ""),
+    });
+  }
+
+  return okJson({
+    opened: result.opened,
+    activated: true,
+    app,
+    targetBundleId: result.targetBundleId,
+    frontmostApp: result.frontmostApp,
+    ...(displayHint ? { guidance: displayHint } : {}),
+  });
+}
+
+async function handleRunDesktopIntent(
+  adapter: ComputerUseHostAdapter,
+  args: Record<string, unknown>,
+  overrides: ComputerUseOverrides,
+): Promise<CuCallToolResult> {
+  let allowedApps = overrides.allowedApps;
+  if (hasComputerWideAccess(overrides.allowedApps)) {
+    const installed = await adapter.executor.listInstalledApps();
+    allowedApps = [
+      ...overrides.allowedApps,
+      ...installed.map((app) => ({
+        bundleId: app.bundleId,
+        displayName: app.displayName,
+        grantedAt: Date.now(),
+        tier: "full" as const,
+      })),
+    ];
+  }
+
+  const resolved = resolveDesktopIntent(args, allowedApps);
+  if (resolved instanceof Error) {
+    return errorResult(resolved.message, "bad_args");
+  }
+  if (resolved.kind === "unsupported") {
+    return okJson({
+      handled: false,
+      instruction: resolved.instruction,
+      guidance: resolved.guidance,
+    });
+  }
+
+  if (!tierSatisfies(resolved.app.tier, "keyboard")) {
+    return errorResult(
+      `"${resolved.app.displayName}" is not granted at tier "full"; direct ` +
+        `music playback needs keyboard/search input. Call request_access for ` +
+        `this app with full control.`,
+      "tier_insufficient",
+    );
+  }
+
+  const result = await adapter.executor.runDesktopIntent({
+    intent: resolved.kind,
+    instruction: resolved.instruction,
+    appBundleId: resolved.app.bundleId,
+    query: resolved.query,
+  });
+
+  if (result.handled && result.completed === false) {
+    return errorResult(
+      `Desktop intent was attempted but not completed. Continue with ` +
+        `observe_desktop/screenshot and low-level controls; do not report success yet. ` +
+        JSON.stringify(result),
+      "state_conflict",
+    );
+  }
+
+  return okJson(result);
+}
+
+async function handleClickUiElement(
+  adapter: ComputerUseHostAdapter,
+  args: Record<string, unknown>,
+  overrides: ComputerUseOverrides,
+  subGates: CuSubGates,
+): Promise<CuCallToolResult> {
+  const elementId = requireString(args, "element_id");
+  if (elementId instanceof Error) {
+    return errorResult(elementId.message, "bad_args");
+  }
+
+  const element = parseUiElementDescriptor(elementId);
+  if (element instanceof Error) return errorResult(element.message, "bad_args");
+
+  const targetGate = runUiElementTargetGate(
+    adapter,
+    overrides,
+    element,
+    "mouse",
+  );
+  if (targetGate) return targetGate;
+
+  const gate = await runInputActionGates(adapter, overrides, subGates, "mouse");
+  if (gate) return gate;
+
+  const center = uiElementCenter(element);
+  const hitGate = await runHitTestGate(
+    adapter,
+    overrides,
+    subGates,
+    center.x,
+    center.y,
+    "mouse",
+  );
+  if (hitGate) return hitGate;
+
+  await adapter.executor.clickUiElement(elementId);
+  return okText("Clicked UI element.");
+}
+
+async function handleTypeIntoUiElement(
+  adapter: ComputerUseHostAdapter,
+  args: Record<string, unknown>,
+  overrides: ComputerUseOverrides,
+  subGates: CuSubGates,
+): Promise<CuCallToolResult> {
+  const elementId = requireString(args, "element_id");
+  if (elementId instanceof Error) {
+    return errorResult(elementId.message, "bad_args");
+  }
+  const text = requireString(args, "text");
+  if (text instanceof Error) return errorResult(text.message, "bad_args");
+
+  const element = parseUiElementDescriptor(elementId);
+  if (element instanceof Error) return errorResult(element.message, "bad_args");
+
+  const targetGate = runUiElementTargetGate(
+    adapter,
+    overrides,
+    element,
+    "keyboard",
+  );
+  if (targetGate) return targetGate;
+
+  if (subGates.hideBeforeAction) {
+    const hidden = await adapter.executor.prepareForAction(
+      overrides.allowedApps.map((a) => a.bundleId),
+      overrides.selectedDisplayId,
+    );
+    if (hidden.length > 0) {
+      overrides.onAppsHidden?.(hidden);
+    }
+  }
+
+  await adapter.executor.focusUiElement(elementId);
+
+  const typeSubGates: CuSubGates = {
+    ...subGates,
+    hideBeforeAction: false,
+  };
+  const gate = await runInputActionGates(
+    adapter,
+    overrides,
+    typeSubGates,
+    "keyboard",
+  );
+  if (gate) return gate;
+
+  try {
+    const result = await adapter.executor.setUiElementValue(elementId, text);
+    if (result.usedValuePattern) {
+      return okText("Typed into UI element (via UI Automation).");
+    }
+  } catch {
+    // Fall back to focused keyboard input below. The frontmost/clipboard gates
+    // have already run, so this remains inside the normal input safety model.
+  }
+
+  return handleType(adapter, { text }, overrides, typeSubGates);
 }
 
 async function handleSwitchDisplay(
@@ -2899,11 +3704,8 @@ async function handleReadClipboard(
   // (same as what the app's own Paste would see).
   if (subGates.clipboardGuard) {
     const frontmost = await adapter.executor.getFrontmostApp();
-    const tierByBundleId = new Map(
-      overrides.allowedApps.map((a) => [a.bundleId, a.tier] as const),
-    );
     const frontmostTier = frontmost
-      ? tierByBundleId.get(frontmost.bundleId)
+      ? findGrantForApp(frontmost, overrides.allowedApps)?.tier
       : undefined;
     await syncClipboardStash(adapter, overrides, frontmostTier === "click");
   }
@@ -2931,11 +3733,8 @@ async function handleWriteClipboard(
 
   if (subGates.clipboardGuard) {
     const frontmost = await adapter.executor.getFrontmostApp();
-    const tierByBundleId = new Map(
-      overrides.allowedApps.map((a) => [a.bundleId, a.tier] as const),
-    );
     const frontmostTier = frontmost
-      ? tierByBundleId.get(frontmost.bundleId)
+      ? findGrantForApp(frontmost, overrides.allowedApps)?.tier
       : undefined;
 
     // Defense-in-depth for the clipboardGuard bypass: write_clipboard +
@@ -3386,6 +4185,9 @@ async function dispatchAction(
     case "screenshot":
       return handleScreenshot(adapter, overrides, subGates);
 
+    case "observe_desktop":
+      return handleObserveDesktop(adapter, a, overrides, subGates);
+
     case "zoom":
       return handleZoom(adapter, a, overrides);
 
@@ -3432,6 +4234,15 @@ async function dispatchAction(
 
     case "open_application":
       return handleOpenApplication(adapter, a, overrides);
+
+    case "run_desktop_intent":
+      return handleRunDesktopIntent(adapter, a, overrides);
+
+    case "click_ui_element":
+      return handleClickUiElement(adapter, a, overrides, subGates);
+
+    case "type_into_ui_element":
+      return handleTypeIntoUiElement(adapter, a, overrides, subGates);
 
     case "switch_display":
       return handleSwitchDisplay(adapter, a, overrides);
@@ -3489,13 +4300,13 @@ export async function handleToolCall(
   const overrides: ComputerUseOverrides = rawOverrides.allowedApps.some(
     (a) =>
       a.tier === undefined ||
-      userDeniedSet.has(a.bundleId) ||
+      bundleIdSetHas(userDeniedSet, a.bundleId) ||
       isPolicyDenied(a.bundleId, a.displayName),
   )
     ? {
         ...rawOverrides,
         allowedApps: rawOverrides.allowedApps
-          .filter((a) => !userDeniedSet.has(a.bundleId))
+          .filter((a) => !bundleIdSetHas(userDeniedSet, a.bundleId))
           .filter((a) => !isPolicyDenied(a.bundleId, a.displayName))
           .map((a) =>
             a.tier !== undefined
@@ -3656,4 +4467,12 @@ export const _test = {
   buildMonitorNote,
   handleSwitchDisplay,
   uniqueDisplayLabels,
+  normalizeAppLookupKey,
+  findRequestedApp,
+  findGrantForApp,
+  hasComputerWideAccess,
+  resolveDesktopIntent,
+  isHostApp,
+  parseUiElementDescriptor,
+  uiElementCenter,
 };

@@ -1,18 +1,17 @@
 /**
- * TeamService — 读取 CLI 生成的 Agent Teams 配置
+ * TeamService — 读取桌面端 Agent Teams 配置
  *
- * Team 配置存储在 ~/.claude/teams/{name}/config.json
+ * Team 配置存储在 Ycode 数据目录的 teams/{name}/config.json
  * 成员 transcript 存储为 JSONL 文件:
- *   - 有 sessionId 的成员: ~/.claude/projects/{project}/{sessionId}.jsonl
- *   - in-process 成员 (无 sessionId): ~/.claude/projects/{project}/{leadSessionId}/subagents/agent-*.jsonl
+ *   - 有 sessionId 的成员: projects/{project}/{sessionId}.jsonl
+ *   - in-process 成员 (无 sessionId): projects/{project}/{leadSessionId}/subagents/agent-*.jsonl
  * 成员发现: config.json + inboxes/ 目录 (解决并发写入丢失成员的问题)
  */
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import * as os from 'os'
 import { ApiError } from '../middleware/errorHandler.js'
-import { writeToMailbox } from '../../utils/teammateMailbox.js'
+import { getDesktopConfigDir } from '../utils/paths.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -52,7 +51,7 @@ export type TranscriptMessage = {
   parentToolUseId?: string
 }
 
-/** Raw config.json structure written by CLI */
+/** Raw config.json structure written by the desktop team runtime */
 type TeamFileRaw = {
   name: string
   description?: string
@@ -81,7 +80,7 @@ type TeamFileRaw = {
 
 export class TeamService {
   private getConfigDir(): string {
-    return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    return getDesktopConfigDir()
   }
 
   private getTeamsDir(): string {
@@ -254,15 +253,12 @@ export class TeamService {
       )
     }
 
-    await writeToMailbox(
-      recipientName,
-      {
-        from: 'user',
-        text,
-        timestamp: new Date().toISOString(),
-      },
-      teamName,
-    )
+    await writeDesktopTeamInbox(this.getTeamsDir(), teamName, recipientName, {
+      from: 'user',
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
   }
 
   // ── Delete team ─────────────────────────────────────────────────────────
@@ -410,7 +406,7 @@ export class TeamService {
     return [...discovered]
   }
 
-  /** Search ~/.claude/projects/ for a JSONL file matching the sessionId. */
+  /** Search Ycode projects/ for a JSONL file matching the sessionId. */
   private async findTranscriptFile(
     sessionId: string,
   ): Promise<string | null> {
@@ -443,7 +439,7 @@ export class TeamService {
 
   /**
    * Search subagents directory for a specific member's transcript.
-   * Path: ~/.claude/projects/{project}/{leadSessionId}/subagents/agent-*.jsonl
+   * Path: projects/{project}/{leadSessionId}/subagents/agent-*.jsonl
    *
    * Matches by reading the first user message and checking for the member name
    * in the `<teammate-message>` content (e.g., "你是 **security-reviewer**").
@@ -606,3 +602,58 @@ export class TeamService {
 }
 
 export const teamService = new TeamService()
+
+type DesktopTeamInboxMessage = {
+  from: string
+  text: string
+  timestamp: string
+  read: boolean
+}
+
+async function writeDesktopTeamInbox(
+  teamsDir: string,
+  teamName: string,
+  recipientName: string,
+  message: DesktopTeamInboxMessage,
+): Promise<void> {
+  const inboxDir = path.join(
+    teamsDir,
+    sanitizePathComponent(teamName),
+    'inboxes',
+  )
+  await fs.mkdir(inboxDir, { recursive: true })
+
+  const inboxPath = path.join(inboxDir, `${sanitizePathComponent(recipientName)}.json`)
+  let messages: DesktopTeamInboxMessage[] = []
+  try {
+    const parsed = JSON.parse(await fs.readFile(inboxPath, 'utf-8')) as unknown
+    if (Array.isArray(parsed)) {
+      messages = parsed.filter(isDesktopTeamInboxMessage)
+    }
+  } catch {
+    messages = []
+  }
+
+  messages.push(message)
+  await fs.writeFile(inboxPath, JSON.stringify(messages, null, 2), 'utf-8')
+}
+
+function isDesktopTeamInboxMessage(value: unknown): value is DesktopTeamInboxMessage {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    typeof (value as DesktopTeamInboxMessage).from === 'string' &&
+    typeof (value as DesktopTeamInboxMessage).text === 'string' &&
+    typeof (value as DesktopTeamInboxMessage).timestamp === 'string',
+  )
+}
+
+function sanitizePathComponent(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '-')
+    .replace(/\.+/g, '.')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, 120) || 'default'
+}

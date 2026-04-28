@@ -60,3 +60,13 @@ export type ProviderTestResult = {
   /** Step 2: Proxy pipeline (only for openai_* formats) */
   proxy?: ProviderTestStepResult
 }
+
+export type LocalLlamaConfig = {
+  available: boolean
+  autoStart: boolean
+  baseUrl: string
+  modelAlias: string
+  apiFormat: ApiFormat
+  configPath: string
+  running: boolean
+}

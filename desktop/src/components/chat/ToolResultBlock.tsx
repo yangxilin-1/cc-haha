@@ -23,11 +23,12 @@ export function ToolResultBlock({ content, isError, toolName, standalone = true 
   if (!standalone) return null
 
   const text = extractText(content)
+  const images = extractImageSources(content)
   const preview = text.slice(0, 200)
   const hasMore = text.length > 200
 
   return (
-    <div className={`mb-2 ml-10 overflow-hidden rounded-xl border ${
+    <div className={`mb-3 overflow-hidden rounded-md border ${
       isError
         ? 'border-[var(--color-error)]/20'
         : 'border-[var(--color-outline-variant)]/20'
@@ -59,6 +60,18 @@ export function ToolResultBlock({ content, isError, toolName, standalone = true 
 
       {/* Inline image gallery from detected paths */}
       <InlineImageGallery text={text} />
+      {images.length > 0 && (
+        <div className="grid gap-2 bg-[var(--color-surface-container-lowest)] px-3 py-2">
+          {images.map((src, index) => (
+            <img
+              key={`${src.slice(0, 48)}-${index}`}
+              src={src}
+              alt=""
+              className="max-h-[420px] max-w-full rounded-md border border-[var(--color-border)] object-contain"
+            />
+          ))}
+        </div>
+      )}
 
       {/* Content */}
       {expanded ? (
@@ -104,4 +117,21 @@ function extractText(content: unknown): string {
     return JSON.stringify(content, null, 2)
   }
   return String(content ?? '')
+}
+
+function extractImageSources(content: unknown): string[] {
+  if (!Array.isArray(content)) return []
+  return content
+    .map((chunk: any) => {
+      if (chunk?.type !== 'image') return ''
+      if (chunk.source?.type === 'base64' && chunk.source?.data) {
+        const mime = chunk.source.media_type || 'image/png'
+        return `data:${mime};base64,${chunk.source.data}`
+      }
+      if (chunk.data) {
+        return `data:${chunk.mimeType || 'image/png'};base64,${chunk.data}`
+      }
+      return ''
+    })
+    .filter(Boolean)
 }

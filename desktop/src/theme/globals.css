@@ -147,6 +147,14 @@
 [data-theme="light"] {
   color-scheme: light;
 
+  /* === 亮色主题：淡蓝紫色品牌润色（仅覆盖亮色）=== */
+  --color-primary: #7C6FD9;
+  --color-primary-container: #6D63C7;
+  --color-primary-fixed: #E7E3FB;
+  --color-primary-fixed-dim: #C6BEF2;
+  --color-inverse-primary: #C6BEF2;
+  --color-on-primary: #FFFFFF;
+
   /* Layout dimensions */
   --sidebar-width: 280px;
   --sidebar-rail-width: 72px;
@@ -179,9 +187,9 @@
 
   /* Shadows */
   --shadow-dropdown: 0 4px 20px rgba(27, 28, 26, 0.04), 0 12px 40px rgba(27, 28, 26, 0.08);
-  --shadow-focus-ring: 0 0 0 1px rgba(143, 72, 47, 0.16);
+  --shadow-focus-ring: 0 0 0 1px rgba(124, 111, 217, 0.22);
   --shadow-error-ring: 0 0 0 1px rgba(186, 26, 26, 0.18);
-  --shadow-button-primary: 0 8px 24px rgba(143, 72, 47, 0.18);
+  --shadow-button-primary: 0 8px 24px rgba(124, 111, 217, 0.22);
 
   /* Button colors */
   --color-btn-primary-fg: var(--color-on-primary);
@@ -237,8 +245,8 @@
 
   /* Misc */
   --color-window-close-hover: #E81123;
-  --color-selection-bg: rgba(255, 219, 208, 0.9);
-  --color-selection-fg: #390C00;
+  --color-selection-bg: rgba(220, 215, 248, 0.9);
+  --color-selection-fg: #1F1950;
 
   /* Radii */
   --radius-sm: 4px;
@@ -438,12 +446,11 @@ button, input, textarea, select, a, [role="button"] {
   width: var(--sidebar-width);
   flex-shrink: 0;
   overflow: hidden;
-  transition: width var(--motion-sidebar-duration) var(--motion-sidebar-easing);
-  will-change: width;
 }
 
 .sidebar-shell[data-state="closed"] {
-  width: var(--sidebar-rail-width);
+  /* 侧边栏保持 280px 尺寸不动，但在被主内容覆盖时禁用交互 */
+  pointer-events: none;
 }
 
 .sidebar-panel {

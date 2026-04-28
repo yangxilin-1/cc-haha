@@ -18,16 +18,17 @@ export function ThinkingBlock({ content, isActive = false }: { content: string; 
   const preview = firstLine.length > 80 ? firstLine.slice(0, 80) + '...' : firstLine
 
   return (
-    <div className="mb-1 ml-10">
+    <div className="mb-3">
       <style>{thinkingStyles}</style>
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[12px] text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-secondary)]"
+        className="flex min-h-7 w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-surface-hover)]/45 hover:text-[var(--color-text-secondary)]"
       >
-        <span className="text-[10px] text-[var(--color-outline)]">
-          {expanded ? '\u25BE' : '\u25B8'}
+        <span className="relative flex h-3 w-3 shrink-0 items-center justify-center" aria-hidden="true">
+          {isActive && <span className="absolute h-3 w-3 rounded-full bg-[var(--color-brand)]/20 animate-ping" />}
+          <span className={`h-1.5 w-1.5 rounded-full ${isActive ? 'bg-[var(--color-brand)]' : 'bg-[var(--color-outline)]'}`} />
         </span>
-        <span className="shrink-0 font-medium italic">
+        <span className="shrink-0 font-medium text-[var(--color-text-secondary)]">
           {t('thinking.label')}
           {isActive && <span className="thinking-dots" />}
         </span>
@@ -41,7 +42,7 @@ export function ThinkingBlock({ content, isActive = false }: { content: string; 
       {expanded && (
         <div
           ref={contentRef}
-          className="mt-1 max-h-[300px] overflow-y-auto rounded-lg border border-[var(--color-border)]/40 bg-[var(--color-surface-container-lowest)] p-2.5 font-[var(--font-mono)] text-[11px] leading-[1.35] text-[var(--color-text-secondary)] whitespace-pre-wrap break-words"
+          className="ml-7 mt-1 max-h-[300px] overflow-y-auto border-l border-[var(--color-border)]/60 px-3 py-2 font-[var(--font-mono)] text-[11px] leading-[1.35] text-[var(--color-text-secondary)] whitespace-pre-wrap break-words"
         >
           {content}
           {isActive && expanded && <span className="thinking-cursor" />}

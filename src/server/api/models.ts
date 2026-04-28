@@ -43,6 +43,31 @@ const DEFAULT_EFFORT = 'medium'
 const settingsService = new SettingsService()
 const providerService = new ProviderService()
 
+type ProviderModelMapping = {
+  main: string
+  haiku: string
+  sonnet: string
+  opus: string
+}
+
+function buildProviderModelList(models: ProviderModelMapping) {
+  const candidates = [
+    { id: models.main, name: models.main, description: 'Default model', context: '' },
+    { id: models.haiku, name: models.haiku, description: 'Fast model', context: '' },
+    { id: models.sonnet, name: models.sonnet, description: 'Balanced model', context: '' },
+    { id: models.opus, name: models.opus, description: 'Powerful model', context: '' },
+  ]
+  const seen = new Set<string>()
+  return candidates.filter((model) => {
+    const id = model.id.trim()
+    if (!id || seen.has(id)) return false
+    seen.add(id)
+    model.id = id
+    model.name = id
+    return true
+  })
+}
+
 // ─── Router ───────────────────────────────────────────────────────────────────
 
 export async function handleModelsApi(
@@ -83,15 +108,8 @@ async function handleModelsList(): Promise<Response> {
   const { providers, activeId } = await providerService.listProviders()
   const activeProvider = activeId ? providers.find((p) => p.id === activeId) : null
   if (activeProvider) {
-    // Convert ModelMapping to model list for API compatibility
-    const modelList = [
-      { id: activeProvider.models.main, name: activeProvider.models.main, description: 'Main model', context: '' },
-      ...(activeProvider.models.haiku !== activeProvider.models.main ? [{ id: activeProvider.models.haiku, name: activeProvider.models.haiku, description: 'Haiku model', context: '' }] : []),
-      ...(activeProvider.models.sonnet !== activeProvider.models.main ? [{ id: activeProvider.models.sonnet, name: activeProvider.models.sonnet, description: 'Sonnet model', context: '' }] : []),
-      ...(activeProvider.models.opus !== activeProvider.models.main ? [{ id: activeProvider.models.opus, name: activeProvider.models.opus, description: 'Opus model', context: '' }] : []),
-    ]
     return Response.json({
-      models: modelList,
+      models: buildProviderModelList(activeProvider.models),
       provider: { id: activeProvider.id, name: activeProvider.name },
     })
   }
@@ -134,14 +152,7 @@ async function handleCurrentModel(req: Request): Promise<Response> {
     const lookupId = contextTier ? `${currentModelId}:${contextTier}` : currentModelId
 
     // Build available models for name lookup
-    const availableModels = activeProvider
-      ? [
-          { id: activeProvider.models.main, name: activeProvider.models.main, description: 'Main model', context: '' },
-          ...(activeProvider.models.haiku && activeProvider.models.haiku !== activeProvider.models.main ? [{ id: activeProvider.models.haiku, name: activeProvider.models.haiku, description: 'Haiku model', context: '' }] : []),
-          ...(activeProvider.models.sonnet && activeProvider.models.sonnet !== activeProvider.models.main ? [{ id: activeProvider.models.sonnet, name: activeProvider.models.sonnet, description: 'Sonnet model', context: '' }] : []),
-          ...(activeProvider.models.opus && activeProvider.models.opus !== activeProvider.models.main ? [{ id: activeProvider.models.opus, name: activeProvider.models.opus, description: 'Opus model', context: '' }] : []),
-        ]
-      : DEFAULT_MODELS
+    const availableModels = activeProvider ? buildProviderModelList(activeProvider.models) : DEFAULT_MODELS
 
     const modelEntry = availableModels.find((m) => m.id === lookupId)
       || availableModels.find((m) => m.id === currentModelId)

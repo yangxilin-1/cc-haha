@@ -8,11 +8,11 @@
 
 import * as path from 'path'
 import * as fs from 'fs/promises'
-import { parseFrontmatter } from '../../utils/frontmatterParser.js'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-import { getProjectDirsUpToHome } from '../../utils/markdownConfigLoader.js'
-import { getCwd } from '../../utils/cwd.js'
+import * as fsSync from 'fs'
+import * as os from 'os'
+import YAML from 'yaml'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
+import { getDesktopConfigDir } from '../utils/paths.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +50,7 @@ type SkillFile = {
 const MAX_FILES = 50
 const MAX_FILE_SIZE = 100 * 1024 // 100 KB
 const SKIP_ENTRIES = new Set(['node_modules', '.git', '__pycache__', '.DS_Store'])
+const PROJECT_CONFIG_DIRS = ['.ycode']
 
 const LANG_MAP: Record<string, string> = {
   md: 'markdown', ts: 'typescript', tsx: 'typescript',
@@ -70,23 +71,57 @@ function normalizeFrontmatter(content: string, sourcePath?: string): {
   frontmatter: Record<string, unknown>
   body: string
 } {
-  const parsed = parseFrontmatter(content, sourcePath)
-  return {
-    frontmatter: parsed.frontmatter as Record<string, unknown>,
-    body: parsed.content,
+  const match = content.match(/^---\s*\n([\s\S]*?)---\s*\n?/)
+  if (!match) return { frontmatter: {}, body: content }
+
+  try {
+    const frontmatter = YAML.parse(match[1] || '') as unknown
+    return {
+      frontmatter: frontmatter && typeof frontmatter === 'object' && !Array.isArray(frontmatter)
+        ? frontmatter as Record<string, unknown>
+        : {},
+      body: content.slice(match[0].length),
+    }
+  } catch (error) {
+    console.warn(
+      `[DesktopSkills] failed to parse frontmatter${sourcePath ? ` in ${sourcePath}` : ''}:`,
+      error,
+    )
+    return { frontmatter: {}, body: content.slice(match[0].length) }
   }
 }
 
 function getUserSkillsDir(): string {
-  return path.join(getClaudeConfigHomeDir(), 'skills')
+  return path.join(getDesktopConfigDir(), 'skills')
 }
 
 function getRequestedCwd(url: URL): string {
-  return url.searchParams.get('cwd') || getCwd()
+  return url.searchParams.get('cwd') || process.cwd()
 }
 
 function getProjectSkillsDirs(cwd: string): string[] {
-  return getProjectDirsUpToHome('skills', cwd)
+  const dirs: string[] = []
+  let current = path.resolve(cwd)
+  const home = path.resolve(os.homedir())
+
+  while (true) {
+    for (const configDir of PROJECT_CONFIG_DIRS) {
+      dirs.push(path.join(current, configDir, 'skills'))
+    }
+
+    if (samePath(current, home)) break
+    if (fsSync.existsSync(path.join(current, '.git'))) break
+
+    const parent = path.dirname(current)
+    if (parent === current) break
+    current = parent
+  }
+
+  return dirs
+}
+
+function samePath(left: string, right: string): boolean {
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase()
 }
 
 async function loadSkillMeta(
@@ -112,7 +147,7 @@ async function loadSkillMeta(
       displayName: (frontmatter.name as string) || undefined,
       description,
       source,
-      userInvocable: frontmatter['user-invocable'] !== false,
+      userInvocable: frontmatter['user-invocable'] !== false && frontmatter['user-invocable'] !== 'false',
       version: frontmatter.version != null ? String(frontmatter.version) : undefined,
       contentLength: raw.length,
       hasDirectory: true,

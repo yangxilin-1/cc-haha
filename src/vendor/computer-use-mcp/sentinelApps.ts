@@ -35,9 +35,29 @@ export const SENTINEL_BUNDLE_IDS: ReadonlySet<string> = new Set([
 
 export type SentinelCategory = "shell" | "filesystem" | "system_settings";
 
+function normalizeBundleIdKey(value: string | undefined): string {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function bundleIdSetHas(
+  bundleIds: ReadonlySet<string>,
+  bundleId: string | undefined,
+): boolean {
+  const key = normalizeBundleIdKey(bundleId);
+  return Boolean(
+    key &&
+      [...bundleIds].some(
+        (candidate) => normalizeBundleIdKey(candidate) === key,
+      ),
+  );
+}
+
 export function getSentinelCategory(bundleId: string): SentinelCategory | null {
-  if (SHELL_ACCESS_BUNDLE_IDS.has(bundleId)) return "shell";
-  if (FILESYSTEM_ACCESS_BUNDLE_IDS.has(bundleId)) return "filesystem";
-  if (SYSTEM_SETTINGS_BUNDLE_IDS.has(bundleId)) return "system_settings";
+  if (bundleIdSetHas(SHELL_ACCESS_BUNDLE_IDS, bundleId)) return "shell";
+  if (bundleIdSetHas(FILESYSTEM_ACCESS_BUNDLE_IDS, bundleId)) return "filesystem";
+  if (bundleIdSetHas(SYSTEM_SETTINGS_BUNDLE_IDS, bundleId)) return "system_settings";
   return null;
 }

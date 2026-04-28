@@ -16,7 +16,7 @@ import { handleProvidersApi } from './api/providers.js'
 import { handleAdaptersApi } from './api/adapters.js'
 import { handleSkillsApi } from './api/skills.js'
 import { handleComputerUseApi } from './api/computer-use.js'
-import { handleHahaOAuthApi } from './api/haha-oauth.js'
+import { handleYcodeOAuthApi } from './api/ycode-oauth.js'
 
 export async function handleApiRequest(req: Request, url: URL): Promise<Response> {
   const path = url.pathname
@@ -67,8 +67,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
     case 'providers':
       return handleProvidersApi(req, url, segments)
 
-    case 'haha-oauth':
-      return handleHahaOAuthApi(req, url, segments)
+    case 'ycode-oauth':
+      return handleYcodeOAuthApi(req, url, segments)
 
     case 'adapters':
       return handleAdaptersApi(req, url, segments)

@@ -1,0 +1,15 @@
+$ vite --host "127.0.0.1"
+[31mfailed to load config from D:\A-work\model-project\Ycode-desk\Ycode\desktop\vite.config.ts[39m
+[31merror when starting dev server:
+Error: spawn EPERM
+    at ChildProcess.spawn (node:internal/child_process:421:11)
+    at Object.spawn (node:child_process:761:9)
+    at ensureServiceIsRunning (D:\A-work\model-project\Ycode-desk\Ycode\desktop\node_modules\esbuild\lib\main.js:1978:29)
+    at build (D:\A-work\model-project\Ycode-desk\Ycode\desktop\node_modules\esbuild\lib\main.js:1876:26)
+    at bundleConfigFile (file:///D:/A-work/model-project/Ycode-desk/Ycode/desktop/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:49309:24)
+    at async bundleAndLoadConfigFile (file:///D:/A-work/model-project/Ycode-desk/Ycode/desktop/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:49293:19)
+    at async loadConfigFromFile (file:///D:/A-work/model-project/Ycode-desk/Ycode/desktop/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:49257:44)
+    at async resolveConfig (file:///D:/A-work/model-project/Ycode-desk/Ycode/desktop/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:48752:24)
+    at async _createServer (file:///D:/A-work/model-project/Ycode-desk/Ycode/desktop/node_modules/vite/dist/node/chunks/dep-D4NMHUTW.js:38349:66)
+    at async CAC.<anonymous> (file:///D:/A-work/model-project/Ycode-desk/Ycode/desktop/node_modules/vite/dist/node/cli.js:753:20)[39m
+error: script "dev" exited with code 1
