@@ -1911,6 +1911,11 @@ export function getOpenAIAuthOverrideWarning(): string | null {
   return null
 }
 
+export function hasOpenAIAuthLogin(): boolean {
+  const openaiTokens = getOpenAIOAuthTokens()
+  return !!openaiTokens?.refreshToken && !isUsing3PServices()
+}
+
 export function isOpenAIAuthActive(): boolean {
   return getOpenAIAccountInformationIfActive() !== undefined
 }

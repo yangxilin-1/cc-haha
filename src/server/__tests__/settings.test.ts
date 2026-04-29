@@ -11,6 +11,12 @@ import { handleSettingsApi } from '../api/settings.js'
 import { handleModelsApi } from '../api/models.js'
 import { handleStatusApi, resetUsage, addUsage } from '../api/status.js'
 import { ProviderService } from '../services/providerService.js'
+import {
+  clearOpenAIOAuthTokenCache,
+  deleteOpenAIOAuthTokens,
+  saveOpenAIOAuthTokens,
+} from '../../services/openaiAuth/storage.js'
+import { getModelOptions } from '../../utils/model/modelOptions.js'
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -21,6 +27,12 @@ let originalUserProfile: string | undefined
 let originalShell: string | undefined
 let originalPath: string | undefined
 let originalCliPath: string | undefined
+let originalAnthropicApiKey: string | undefined
+let originalAnthropicBaseUrl: string | undefined
+let originalAnthropicModel: string | undefined
+let originalAnthropicDefaultHaikuModel: string | undefined
+let originalAnthropicDefaultSonnetModel: string | undefined
+let originalAnthropicDefaultOpusModel: string | undefined
 
 async function setup() {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-test-'))
@@ -30,11 +42,24 @@ async function setup() {
   originalShell = process.env.SHELL
   originalPath = process.env.PATH
   originalCliPath = process.env.CLAUDE_CLI_PATH
+  originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
+  originalAnthropicBaseUrl = process.env.ANTHROPIC_BASE_URL
+  originalAnthropicModel = process.env.ANTHROPIC_MODEL
+  originalAnthropicDefaultHaikuModel = process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+  originalAnthropicDefaultSonnetModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+  originalAnthropicDefaultOpusModel = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   process.env.CLAUDE_CONFIG_DIR = tmpDir
   process.env.HOME = tmpDir
   process.env.USERPROFILE = tmpDir
   process.env.SHELL = '/bin/zsh'
   process.env.PATH = ''
+  delete process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_BASE_URL
+  delete process.env.ANTHROPIC_MODEL
+  delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+  delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+  delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  clearOpenAIOAuthTokenCache()
 }
 
 async function teardown() {
@@ -73,6 +98,45 @@ async function teardown() {
   } else {
     delete process.env.CLAUDE_CLI_PATH
   }
+
+  if (originalAnthropicApiKey !== undefined) {
+    process.env.ANTHROPIC_API_KEY = originalAnthropicApiKey
+  } else {
+    delete process.env.ANTHROPIC_API_KEY
+  }
+
+  if (originalAnthropicBaseUrl !== undefined) {
+    process.env.ANTHROPIC_BASE_URL = originalAnthropicBaseUrl
+  } else {
+    delete process.env.ANTHROPIC_BASE_URL
+  }
+
+  if (originalAnthropicModel !== undefined) {
+    process.env.ANTHROPIC_MODEL = originalAnthropicModel
+  } else {
+    delete process.env.ANTHROPIC_MODEL
+  }
+
+  if (originalAnthropicDefaultHaikuModel !== undefined) {
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = originalAnthropicDefaultHaikuModel
+  } else {
+    delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
+  }
+
+  if (originalAnthropicDefaultSonnetModel !== undefined) {
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = originalAnthropicDefaultSonnetModel
+  } else {
+    delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+  }
+
+  if (originalAnthropicDefaultOpusModel !== undefined) {
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = originalAnthropicDefaultOpusModel
+  } else {
+    delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  }
+
+  deleteOpenAIOAuthTokens()
+  clearOpenAIOAuthTokenCache()
 
   await fs.rm(tmpDir, { recursive: true, force: true })
 }
@@ -324,6 +388,34 @@ describe('Models API', () => {
     expect(body.models[0].id).toContain('claude')
   })
 
+  it('GET /api/models should merge env-configured provider models with saved OpenAI OAuth models', async () => {
+    process.env.ANTHROPIC_API_KEY = 'deepseek-key'
+    process.env.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
+    process.env.ANTHROPIC_MODEL = 'deepseek-v4-pro'
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'deepseek-v4-flash'
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'deepseek-v4-pro'
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'deepseek-v4-pro'
+    saveOpenAIOAuthTokens({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      expiresAt: Date.now() + 60_000,
+    })
+
+    const { req, url, segments } = makeRequest('GET', '/api/models')
+    const res = await handleModelsApi(req, url, segments)
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    const ids = body.models.map((model: { id: string }) => model.id)
+
+    expect(ids).toContain('deepseek-v4-pro')
+    expect(ids).toContain('deepseek-v4-flash')
+    expect(ids).toContain('gpt-5.3-codex')
+    expect(ids).toContain('gpt-5.4')
+    expect(ids).toContain('gpt-5.4-mini')
+    expect(ids.filter((id: string) => id === 'deepseek-v4-pro')).toHaveLength(1)
+  })
+
   it('GET /api/models/current should return default model when not set', async () => {
     const { req, url, segments } = makeRequest('GET', '/api/models/current')
     const res = await handleModelsApi(req, url, segments)
@@ -331,6 +423,17 @@ describe('Models API', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.model.id).toBe('claude-opus-4-7')
+  })
+
+  it('GET /api/models/current should respect env-configured default model when no provider is active', async () => {
+    process.env.ANTHROPIC_MODEL = 'deepseek-v4-pro'
+
+    const { req, url, segments } = makeRequest('GET', '/api/models/current')
+    const res = await handleModelsApi(req, url, segments)
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.model.id).toBe('deepseek-v4-pro')
   })
 
   it('PUT /api/models/current should switch model', async () => {
@@ -447,6 +550,37 @@ describe('Models API', () => {
     const { req, url, segments } = makeRequest('GET', '/api/models/unknown')
     const res = await handleModelsApi(req, url, segments)
     expect(res.status).toBe(404)
+  })
+})
+
+describe('Model Options', () => {
+  beforeEach(setup)
+  afterEach(teardown)
+
+  it('should keep OpenAI OAuth models visible alongside env-configured provider models', () => {
+    process.env.ANTHROPIC_API_KEY = 'deepseek-key'
+    process.env.ANTHROPIC_BASE_URL = 'https://api.deepseek.com/anthropic'
+    process.env.ANTHROPIC_MODEL = 'deepseek-v4-pro'
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'deepseek-v4-flash'
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'deepseek-v4-pro'
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'deepseek-v4-pro'
+    saveOpenAIOAuthTokens({
+      accessToken: 'access-token',
+      refreshToken: 'refresh-token',
+      expiresAt: Date.now() + 60_000,
+    })
+
+    const options = getModelOptions()
+    const values = options
+      .map(option => option.value)
+      .filter((value): value is string => typeof value === 'string')
+    const labels = options.map(option => option.label)
+
+    expect(values).toContain('gpt-5.3-codex')
+    expect(values).toContain('gpt-5.4')
+    expect(values).toContain('gpt-5.4-mini')
+    expect(labels).toContain('deepseek-v4-pro')
+    expect(labels).toContain('deepseek-v4-flash')
   })
 })
 
