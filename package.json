@@ -11,7 +11,7 @@
     "start": "bun run ./bin/claude-haha",
     "check:pr": "bun run scripts/pr/check-pr.ts",
     "check:impact": "bun run scripts/pr/impact-report.ts",
-    "check:policy": "bun test scripts/pr/change-policy.test.ts",
+    "check:policy": "bun test scripts/pr/change-policy.test.ts scripts/pr/pr-triage-workflow.test.ts",
     "check:server": "bun run scripts/pr/run-server-tests.ts",
     "check:desktop": "cd desktop && bun run lint && bun run test -- --run && bun run build",
     "check:adapters": "cd adapters && bun test",

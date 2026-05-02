@@ -227,11 +227,11 @@ jobs:
               '**Risk notes:**',
               riskNotes.map((note) => `- ${note}`).join('\n'),
               '',
+              'Hard merge gates still come from GitHub Actions, not AI review.',
+              '',
               '**Dosu handoff:** Dosu can be used as the AI reviewer for risk explanation, missing-test prompts, and maintainer Q&A. If it does not comment automatically from the PR template, ask:',
               '',
-              '`@dosubot review this PR for changed-area risk, missing tests, docs impact, desktop startup risk, and CLI core impact.`',
-              '',
-              'Hard merge gates still come from GitHub Actions, not AI review.',
+              '@dosubot review this PR for changed-area risk, missing tests, docs impact, desktop startup risk, and CLI core impact.',
             ].join('\n')
 
             const comments = await github.paginate(github.rest.issues.listComments, {
