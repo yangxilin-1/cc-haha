@@ -1,0 +1,235 @@
+import { appendFileSync, cpSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createServer } from 'node:net'
+import type { BaselineCase, BaselineTarget, LaneResult } from '../types'
+
+type ServerMessage = {
+  type: string
+  requestId?: string
+  message?: string
+  code?: string
+  [key: string]: unknown
+}
+
+function getPort() {
+  return new Promise<number>((resolve, reject) => {
+    const server = createServer()
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : 0
+      server.close(() => resolve(port))
+    })
+  })
+}
+
+async function waitForHttp(url: string, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url)
+      if (res.ok) return
+    } catch {
+      // Keep polling until timeout.
+    }
+    await Bun.sleep(500)
+  }
+  throw new Error(`Timed out waiting for ${url}`)
+}
+
+async function runCommand(command: string[], cwd: string) {
+  const proc = Bun.spawn(command, {
+    cwd,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const stdout = await new Response(proc.stdout).text()
+  const stderr = await new Response(proc.stderr).text()
+  const exitCode = await proc.exited
+  return { exitCode, stdout, stderr }
+}
+
+async function pipeToFile(stream: ReadableStream<Uint8Array> | null, path: string) {
+  if (!stream) return
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    appendFileSync(path, decoder.decode(value, { stream: true }))
+  }
+}
+
+function waitForWebSocketOpen(ws: WebSocket) {
+  return new Promise<void>((resolve, reject) => {
+    ws.onopen = () => resolve()
+    ws.onerror = () => reject(new Error('WebSocket failed to open'))
+  })
+}
+
+async function runPromptOverWebSocket(
+  baseUrl: string,
+  sessionId: string,
+  prompt: string,
+  timeoutMs: number,
+  target?: BaselineTarget,
+) {
+  const wsUrl = baseUrl.replace(/^http/, 'ws')
+  const ws = new WebSocket(`${wsUrl}/ws/${sessionId}`)
+  const messages: ServerMessage[] = []
+
+  try {
+    await waitForWebSocketOpen(ws)
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Timed out waiting for baseline case completion after ${timeoutMs}ms`))
+      }, timeoutMs)
+
+      ws.onmessage = (event) => {
+        const message = JSON.parse(String(event.data)) as ServerMessage
+        messages.push(message)
+
+        if (message.type === 'connected') {
+          if (target && target.modelId !== 'current') {
+            ws.send(JSON.stringify({
+              type: 'set_runtime_config',
+              providerId: target.providerId,
+              modelId: target.modelId,
+            }))
+          }
+          ws.send(JSON.stringify({ type: 'user_message', content: prompt }))
+          return
+        }
+
+        if (message.type === 'permission_request' && typeof message.requestId === 'string') {
+          ws.send(JSON.stringify({
+            type: 'permission_response',
+            requestId: message.requestId,
+            allowed: true,
+            rule: 'baseline-run',
+          }))
+          return
+        }
+
+        if (message.type === 'message_complete') {
+          clearTimeout(timer)
+          resolve()
+          return
+        }
+
+        if (message.type === 'error') {
+          clearTimeout(timer)
+          reject(new Error(`${message.code ?? 'WS_ERROR'}: ${message.message ?? 'unknown error'}`))
+        }
+      }
+
+      ws.onerror = () => {
+        clearTimeout(timer)
+        reject(new Error('WebSocket error during baseline case'))
+      }
+    })
+  } finally {
+    ws.close()
+  }
+
+  return messages
+}
+
+export async function executeBaselineCase(
+  testCase: BaselineCase,
+  rootDir: string,
+  artifactDir: string,
+  target?: BaselineTarget,
+): Promise<LaneResult> {
+  const started = Date.now()
+  const resultId = target
+    ? `baseline:${testCase.id}:${target.label.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+    : `baseline:${testCase.id}`
+  const resultTitle = target ? `${testCase.title} (${target.label})` : testCase.title
+  mkdirSync(artifactDir, { recursive: true })
+
+  const port = await getPort()
+  const baseUrl = `http://127.0.0.1:${port}`
+  const workRoot = await mkdtemp(join(tmpdir(), `quality-gate-${testCase.id}-`))
+  const projectDir = join(workRoot, 'project')
+  cpSync(join(rootDir, testCase.fixture), projectDir, { recursive: true })
+
+  const serverLogPath = join(artifactDir, 'server.log')
+  const transcriptPath = join(artifactDir, 'transcript.jsonl')
+  const verificationPath = join(artifactDir, 'verification.log')
+  const server = Bun.spawn(['bun', 'run', 'src/server/index.ts', '--host', '127.0.0.1', '--port', String(port)], {
+    cwd: rootDir,
+    stdout: 'pipe',
+    stderr: 'pipe',
+    env: {
+      ...process.env,
+      SERVER_PORT: String(port),
+    },
+  })
+  const stdoutPump = pipeToFile(server.stdout, serverLogPath)
+  const stderrPump = pipeToFile(server.stderr, serverLogPath)
+
+  try {
+    await waitForHttp(`${baseUrl}/health`, 60_000)
+
+    const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workDir: projectDir }),
+    })
+    if (!createResponse.ok) {
+      throw new Error(`Failed to create session: ${createResponse.status}`)
+    }
+    const session = await createResponse.json() as { sessionId?: string }
+    if (!session.sessionId) {
+      throw new Error('Session response did not include sessionId')
+    }
+
+    const messages = await runPromptOverWebSocket(baseUrl, session.sessionId, testCase.prompt, testCase.timeoutMs, target)
+    writeFileSync(transcriptPath, messages.map((message) => JSON.stringify(message)).join('\n') + '\n')
+
+    let verificationLog = ''
+    for (const command of testCase.verify.commands) {
+      const result = await runCommand(command, projectDir)
+      verificationLog += `$ ${command.join(' ')}\n${result.stdout}${result.stderr}\n`
+      if (result.exitCode !== 0) {
+        writeFileSync(verificationPath, verificationLog)
+        return {
+          id: resultId,
+          title: resultTitle,
+          status: 'failed',
+          durationMs: Date.now() - started,
+          exitCode: result.exitCode,
+          error: `verification command failed: ${command.join(' ')}`,
+          artifactDir,
+        }
+      }
+    }
+    writeFileSync(verificationPath, verificationLog)
+
+    return {
+      id: resultId,
+      title: resultTitle,
+      status: 'passed',
+      durationMs: Date.now() - started,
+      artifactDir,
+    }
+  } catch (error) {
+    return {
+      id: resultId,
+      title: resultTitle,
+      status: 'failed',
+      durationMs: Date.now() - started,
+      error: error instanceof Error ? error.message : String(error),
+      artifactDir,
+    }
+  } finally {
+    server.kill()
+    await server.exited.catch(() => undefined)
+    await Promise.all([stdoutPump, stderrPump]).catch(() => undefined)
+    rmSync(workRoot, { recursive: true, force: true })
+  }
+}

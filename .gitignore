@@ -22,6 +22,9 @@ extracted-natives/
 # E2E screenshots
 e2e-*.png
 
+# Quality gate reports
+artifacts/quality-runs/
+
 # Desktop build output
 desktop/dist/
 desktop/build-artifacts/

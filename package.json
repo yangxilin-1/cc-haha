@@ -17,6 +17,10 @@
     "check:adapters": "cd adapters && bun test",
     "check:native": "cd desktop && bun run build:sidecars && cd src-tauri && cargo check",
     "check:docs": "npm ci && npm run docs:build",
+    "quality:gate": "bun run scripts/quality-gate/index.ts",
+    "quality:pr": "bun run quality:gate --mode pr",
+    "quality:baseline": "bun run quality:gate --mode baseline",
+    "quality:release": "bun run quality:gate --mode release",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"

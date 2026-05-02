@@ -2,18 +2,11 @@
 
 import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
+import { quarantinedPathSet } from '../quality-gate/quarantine'
 
 const root = process.cwd()
 const roots = ['src/server', 'src/tools', 'src/utils']
-const excludedFiles = new Set([
-  // These suites are not stable enough for the default PR gate yet. Keep them
-  // out of CI until they are fixed or moved to a maintainer-only workflow.
-  'src/server/__tests__/cron-scheduler.test.ts',
-  'src/server/__tests__/providers-real.test.ts',
-  'src/server/__tests__/tasks.test.ts',
-  'src/server/__tests__/e2e/business-flow.test.ts',
-  'src/server/__tests__/e2e/full-flow.test.ts',
-])
+const excludedFiles = quarantinedPathSet()
 
 function normalize(path: string) {
   return relative(root, path).split(sep).join('/')

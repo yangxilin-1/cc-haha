@@ -237,9 +237,11 @@ describe('ConversationService', () => {
 
   it('should reconstruct usage and metadata from a persisted transcript', async () => {
     const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY
     const tmpConfigDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-transcript-'))
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-workdir-'))
     process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    process.env.ANTHROPIC_API_KEY = 'test-key'
 
     try {
       const svc = new SessionService()
@@ -289,6 +291,11 @@ describe('ConversationService', () => {
         delete process.env.CLAUDE_CONFIG_DIR
       } else {
         process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      }
+      if (previousAnthropicApiKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY
+      } else {
+        process.env.ANTHROPIC_API_KEY = previousAnthropicApiKey
       }
       await fs.rm(tmpConfigDir, { recursive: true, force: true })
       await fs.rm(workDir, { recursive: true, force: true })
