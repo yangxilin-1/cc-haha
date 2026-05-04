@@ -56,9 +56,11 @@ describe('AdapterHttpClient', () => {
     expect(projects[0].projectName).toBe('my-app')
   })
 
-  it('matchProject accepts an absolute local project path without recent history', async () => {
-    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'im-project-'))
+  it('matchProject accepts an absolute local project path inside an allowed root without recent history', async () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'im-root-'))
+    const projectDir = fs.mkdtempSync(path.join(rootDir, 'project-'))
     try {
+      client = new AdapterHttpClient('ws://127.0.0.1:3456', { allowedProjectRoots: [rootDir] })
       globalThis.fetch = mock(() => {
         throw new Error('recent projects should not be queried for absolute paths')
       }) as any
@@ -69,6 +71,26 @@ describe('AdapterHttpClient', () => {
       expect(result.project?.projectName).toBe(path.basename(projectDir))
       expect((globalThis.fetch as any).mock.calls).toHaveLength(0)
     } finally {
+      fs.rmSync(rootDir, { recursive: true, force: true })
+    }
+  })
+
+  it('matchProject rejects absolute local project paths outside allowed roots', async () => {
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'im-root-'))
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'im-project-'))
+    try {
+      client = new AdapterHttpClient('ws://127.0.0.1:3456', { allowedProjectRoots: [rootDir] })
+      globalThis.fetch = mock(() => {
+        throw new Error('recent projects should not be queried for rejected absolute paths')
+      }) as any
+
+      const result = await client.matchProject(projectDir)
+
+      expect(result.project).toBeUndefined()
+      expect(result.ambiguous).toBeUndefined()
+      expect((globalThis.fetch as any).mock.calls).toHaveLength(0)
+    } finally {
+      fs.rmSync(rootDir, { recursive: true, force: true })
       fs.rmSync(projectDir, { recursive: true, force: true })
     }
   })

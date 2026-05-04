@@ -1,6 +1,7 @@
 ﻿import { expect, test } from "bun:test"
 import {
   buildAzureOpenAIInput,
+  parseAzureOpenAIResponse,
   resolveAzureOpenAIEndpoint,
   resolveAzureOpenAIDeployment,
 } from "../src/services/api/azureOpenAI.js"
@@ -15,6 +16,28 @@ test("resolveAzureOpenAIEndpoint appends responses path and api-version", () => 
   const url = resolveAzureOpenAIEndpoint()
   expect(url).toContain("/openai/responses")
   expect(url).toContain("api-version=2025-04-01-preview")
+
+  process.env.AZURE_OPENAI_BASE_URL = prevBase
+  process.env.AZURE_OPENAI_API_VERSION = prevVersion
+})
+
+test("resolveAzureOpenAIEndpoint normalizes existing Azure OpenAI paths", () => {
+  const prevBase = process.env.AZURE_OPENAI_BASE_URL
+  const prevVersion = process.env.AZURE_OPENAI_API_VERSION
+  process.env.AZURE_OPENAI_API_VERSION = "2025-04-01-preview"
+
+  process.env.AZURE_OPENAI_BASE_URL =
+    "https://example.cognitiveservices.azure.com/openai/v1/?foo=bar"
+  let url = new URL(resolveAzureOpenAIEndpoint())
+  expect(url.pathname).toBe("/openai/responses")
+  expect(url.searchParams.get("foo")).toBe("bar")
+  expect(url.searchParams.get("api-version")).toBe("2025-04-01-preview")
+
+  process.env.AZURE_OPENAI_BASE_URL =
+    "https://example.cognitiveservices.azure.com/openai/responses?api-version=custom"
+  url = new URL(resolveAzureOpenAIEndpoint())
+  expect(url.pathname).toBe("/openai/responses")
+  expect(url.searchParams.get("api-version")).toBe("2025-04-01-preview")
 
   process.env.AZURE_OPENAI_BASE_URL = prevBase
   process.env.AZURE_OPENAI_API_VERSION = prevVersion
@@ -52,6 +75,23 @@ test("buildAzureOpenAIInput maps tool_use and tool_result", () => {
 
   expect(input.some(msg => msg.role === "assistant")).toBe(true)
   expect(input.some(msg => msg.role === "tool")).toBe(true)
+})
+
+test("parseAzureOpenAIResponse derives tool stop reason from function calls", () => {
+  const result = parseAzureOpenAIResponse({
+    id: "resp-1",
+    output: [
+      {
+        type: "function_call",
+        id: "call-1",
+        name: "my_tool",
+        arguments: "{\"foo\":\"bar\"}",
+      },
+    ],
+  })
+
+  expect(result.stopReason).toBe("tool_use")
+  expect(result.content[0]?.type).toBe("tool_use")
 })
 
 test("resolveAzureOpenAIDeployment throws when codex mapping is missing", () => {

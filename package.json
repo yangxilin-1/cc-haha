@@ -92,6 +92,9 @@
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },
+  "overrides": {
+    "follow-redirects": "^1.16.0"
+  },
   "devDependencies": {
     "mermaid": "^11.14.0",
     "vitepress": "^1.6.3",

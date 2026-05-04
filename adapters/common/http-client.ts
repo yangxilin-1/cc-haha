@@ -28,14 +28,18 @@ export type SessionTask = {
 
 export class AdapterHttpClient {
   readonly httpBaseUrl: string
+  private readonly allowedProjectRoots: string[]
   /** Default timeout for HTTP requests (30 seconds) */
   private static readonly DEFAULT_TIMEOUT_MS = 30_000
 
-  constructor(wsUrl: string) {
+  constructor(wsUrl: string, options?: { allowedProjectRoots?: string[] }) {
     this.httpBaseUrl = wsUrl
       .replace(/^ws:/, 'http:')
       .replace(/^wss:/, 'https:')
       .replace(/\/$/, '')
+    this.allowedProjectRoots = (options?.allowedProjectRoots ?? [])
+      .map(resolveExistingProjectPath)
+      .filter((value): value is string => Boolean(value))
   }
 
   /** Create an AbortController with timeout */
@@ -91,6 +95,10 @@ export class AdapterHttpClient {
   async matchProject(query: string): Promise<{ project?: RecentProject; ambiguous?: RecentProject[] }> {
     const directPath = resolveExistingProjectPath(query)
     if (directPath) {
+      if (!isPathWithinAllowedRoots(directPath, this.allowedProjectRoots)) {
+        return {}
+      }
+
       return {
         project: {
           projectPath: directPath,
@@ -163,6 +171,19 @@ export class AdapterHttpClient {
       clearTimeout(timer)
     }
   }
+}
+
+function isPathWithinAllowedRoots(target: string, roots: string[]): boolean {
+  if (roots.length === 0) return false
+
+  for (const root of roots) {
+    const relative = path.relative(root, target)
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+      return true
+    }
+  }
+
+  return false
 }
 
 function resolveExistingProjectPath(query: string): string | null {

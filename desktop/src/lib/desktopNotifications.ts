@@ -15,7 +15,9 @@ type NativeNotificationSender = (options: { title: string; body?: string }) => P
 export type DesktopNotificationPermission = NotificationPermission | 'unsupported'
 
 const notifiedKeys = new Set<string>()
+const pendingKeys = new Set<string>()
 const lastNotificationAtByScope = new Map<string, number>()
+const pendingCooldownScopes = new Set<string>()
 let overrideNativeNotificationSender: NativeNotificationSender | null = null
 
 function readBrowserNotificationPermission(): DesktopNotificationPermission {
@@ -119,27 +121,27 @@ async function requestWindowAttention(): Promise<boolean> {
   }
 }
 
-export function notifyDesktop(options: DesktopNotificationOptions): void {
+export async function notifyDesktop(options: DesktopNotificationOptions): Promise<boolean> {
   if (!useSettingsStore.getState().desktopNotificationsEnabled) {
-    return
+    return false
   }
 
-  if (options.dedupeKey && notifiedKeys.has(options.dedupeKey)) {
-    return
+  if (options.dedupeKey && (notifiedKeys.has(options.dedupeKey) || pendingKeys.has(options.dedupeKey))) {
+    return false
   }
 
   const cooldownScope = options.cooldownScope
   if (cooldownScope) {
     const now = Date.now()
     const lastNotificationAt = lastNotificationAtByScope.get(cooldownScope) ?? 0
-    if (now - lastNotificationAt < (options.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
-      return
+    if (pendingCooldownScopes.has(cooldownScope) || now - lastNotificationAt < (options.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
+      return false
     }
-    lastNotificationAtByScope.set(cooldownScope, now)
+    pendingCooldownScopes.add(cooldownScope)
   }
 
   if (options.dedupeKey) {
-    notifiedKeys.add(options.dedupeKey)
+    pendingKeys.add(options.dedupeKey)
   }
 
   if (options.requestAttention) {
@@ -147,20 +149,35 @@ export function notifyDesktop(options: DesktopNotificationOptions): void {
   }
 
   const sender = overrideNativeNotificationSender ?? sendNativeNotification
-  void Promise.resolve(sender({ title: options.title, body: options.body })).then((sent) => {
+  try {
+    const sent = await Promise.resolve(sender({ title: options.title, body: options.body }))
+    if (options.dedupeKey) {
+      pendingKeys.delete(options.dedupeKey)
+      if (sent) notifiedKeys.add(options.dedupeKey)
+    }
+    if (sent && cooldownScope) {
+      lastNotificationAtByScope.set(cooldownScope, Date.now())
+    }
+    if (cooldownScope) pendingCooldownScopes.delete(cooldownScope)
     if (!sent && typeof console !== 'undefined') {
       console.warn('[desktopNotifications] native notification permission was not granted')
     }
-  }).catch((err) => {
+    return sent
+  } catch (err) {
+    if (options.dedupeKey) pendingKeys.delete(options.dedupeKey)
+    if (cooldownScope) pendingCooldownScopes.delete(cooldownScope)
     if (typeof console !== 'undefined') {
       console.warn('[desktopNotifications] failed to send native notification:', err)
     }
-  })
+    return false
+  }
 }
 
 export function resetDesktopNotificationsForTests(): void {
   notifiedKeys.clear()
+  pendingKeys.clear()
   lastNotificationAtByScope.clear()
+  pendingCooldownScopes.clear()
   overrideNativeNotificationSender = null
 }
 

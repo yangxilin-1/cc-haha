@@ -486,6 +486,47 @@ describe('ProviderService', () => {
       expect(clearedEnv.CLAUDE_CODE_MODEL_CONTEXT_WINDOWS).toBeUndefined()
     })
 
+    test('auth status treats preset default auth as active provider auth', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput({
+        presetId: 'lmstudio',
+        apiKey: '',
+        authStrategy: 'auth_token_empty_api_key',
+        models: {
+          main: 'lmstudio-model',
+          haiku: 'lmstudio-model',
+          sonnet: 'lmstudio-model',
+          opus: 'lmstudio-model',
+        },
+      }))
+      await svc.activateProvider(provider.id)
+
+      const status = await svc.checkAuthStatus()
+
+      expect(status).toEqual({
+        hasAuth: true,
+        source: 'cc-haha-provider',
+        activeProvider: provider.name,
+      })
+    })
+
+    test('auth status treats dummy proxy auth as active provider auth', async () => {
+      const svc = new ProviderService()
+      const provider = await svc.addProvider(sampleInput({
+        apiKey: '',
+        apiFormat: 'openai_chat',
+      }))
+      await svc.activateProvider(provider.id)
+
+      const status = await svc.checkAuthStatus()
+
+      expect(status).toEqual({
+        hasAuth: true,
+        source: 'cc-haha-provider',
+        activeProvider: provider.name,
+      })
+    })
+
     test('provider auto compact window should override preset default env on activation and runtime env', async () => {
       const svc = new ProviderService()
       const provider = await svc.addProvider(sampleInput({

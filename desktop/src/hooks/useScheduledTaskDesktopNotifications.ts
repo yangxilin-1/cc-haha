@@ -89,12 +89,12 @@ export function useScheduledTaskDesktopNotifications(): void {
 
         for (const run of pendingRuns) {
           const notification = formatTaskRunNotification(run)
-          notifyDesktop({
+          const sent = await notifyDesktop({
             dedupeKey: `scheduled-task:${run.id}`,
             title: notification.title,
             body: notification.body,
           })
-          notifiedRunIds.add(run.id)
+          if (sent) notifiedRunIds.add(run.id)
         }
         writeNotifiedRunIds(notifiedRunIds)
       } catch (err) {

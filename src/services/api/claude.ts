@@ -1058,7 +1058,7 @@ async function* queryModel(
           model: options.model,
           role: "assistant",
           content: result.content,
-          stop_reason: "end_turn",
+          stop_reason: result.stopReason,
           usage: result.usage,
         },
         requestId: result.responseId ?? undefined,

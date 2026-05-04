@@ -89,6 +89,20 @@ describe('desktopNotifications', () => {
     await vi.waitFor(() => expect(sender).toHaveBeenCalledTimes(1))
   })
 
+  it('does not consume dedupe keys when native notification delivery fails', async () => {
+    const sender = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    setNativeNotificationSenderForTests(sender)
+
+    await expect(notifyDesktop({ dedupeKey: 'permission:retry', title: 'Permission required' })).resolves.toBe(false)
+    await expect(notifyDesktop({ dedupeKey: 'permission:retry', title: 'Permission required' })).resolves.toBe(true)
+
+    expect(sender).toHaveBeenCalledTimes(2)
+    warnSpy.mockRestore()
+  })
+
   it('reports and requests native notification permission', async () => {
     notificationPluginMock.isPermissionGranted.mockResolvedValueOnce(false).mockResolvedValueOnce(false)
     notificationPluginMock.requestPermission.mockResolvedValue('granted')
@@ -106,12 +120,12 @@ describe('desktopNotifications', () => {
     const sender = vi.fn(async () => true)
     setNativeNotificationSenderForTests(sender)
 
-    notifyDesktop({
+    void notifyDesktop({
       dedupeKey: 'permission:1',
       title: 'Permission required',
       body: 'Approve command execution',
     })
-    notifyDesktop({
+    void notifyDesktop({
       dedupeKey: 'permission:1',
       title: 'Permission required',
       body: 'Approve command execution',

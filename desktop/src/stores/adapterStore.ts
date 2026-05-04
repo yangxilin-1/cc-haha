@@ -50,7 +50,7 @@ type AdapterStore = {
   updateConfig: (patch: Partial<AdapterFileConfig>) => Promise<void>
   generatePairingCode: () => Promise<string>
   startWechatLogin: () => Promise<{ qrcodeUrl?: string; message: string; sessionKey: string }>
-  pollWechatLogin: (sessionKey: string) => Promise<{ connected: boolean; message?: string }>
+  pollWechatLogin: (sessionKey: string) => Promise<{ connected: boolean; status?: string; message?: string }>
   removePairedUser: (platform: 'telegram' | 'feishu' | 'wechat' | 'dingtalk', userId: string | number) => Promise<void>
   beginDingtalkRegistration: () => Promise<DingtalkRegistrationBegin>
   pollDingtalkRegistration: (deviceCode: string) => Promise<DingtalkRegistrationPoll>
@@ -104,7 +104,7 @@ export const useAdapterStore = create<AdapterStore>((set, get) => ({
   pollWechatLogin: async (sessionKey) => {
     const result = await adaptersApi.pollWechatLogin(sessionKey)
     if ('connected' in result && result.connected === false) {
-      return { connected: false, message: result.message }
+      return { connected: false, status: result.status, message: result.message }
     }
     if ('wechat' in result || 'telegram' in result || 'feishu' in result || 'dingtalk' in result) {
       set({ config: result })

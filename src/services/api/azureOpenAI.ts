@@ -47,6 +47,7 @@ type OpenAIResponse = {
   id?: string
   output?: OpenAIResponseOutputItem[]
   output_text?: string
+  status?: string
   usage?: {
     input_tokens?: number
     output_tokens?: number
@@ -67,7 +68,11 @@ export function resolveAzureOpenAIEndpoint(): string {
   const apiVersion = process.env.AZURE_OPENAI_API_VERSION || DEFAULT_API_VERSION
   const url = new URL(baseUrl)
   const path = url.pathname.replace(/\/$/, '')
-  if (!/\/openai\//i.test(path)) {
+  if (/\/openai\/responses$/i.test(path)) {
+    url.pathname = path
+  } else if (/\/openai(?:\/.*)?$/i.test(path)) {
+    url.pathname = path.replace(/\/openai(?:\/.*)?$/i, '/openai/responses')
+  } else {
     url.pathname = `${path}/openai/responses`
   }
 
@@ -312,6 +317,7 @@ export function parseAzureOpenAIResponse(response: OpenAIResponse): {
   content: BetaContentBlock[]
   usage: BetaUsage
   responseId?: string
+  stopReason: 'end_turn' | 'tool_use' | 'max_tokens'
 } {
   const contentBlocks: BetaContentBlock[] = []
 
@@ -332,7 +338,14 @@ export function parseAzureOpenAIResponse(response: OpenAIResponse): {
     cache_creation_input_tokens: 0,
   } as BetaUsage
 
-  return { content: contentBlocks, usage, responseId: response.id }
+  const stopReason =
+    response.status === 'incomplete'
+      ? 'max_tokens'
+      : contentBlocks.some(block => block.type === 'tool_use')
+        ? 'tool_use'
+        : 'end_turn'
+
+  return { content: contentBlocks, usage, responseId: response.id, stopReason }
 }
 
 export async function requestAzureOpenAI(params: {
@@ -347,7 +360,7 @@ export async function requestAzureOpenAI(params: {
   agents: AgentDefinition[]
   allowedAgentTypes?: string[]
   signal: AbortSignal
-}): Promise<{ content: BetaContentBlock[]; usage: BetaUsage; responseId?: string }>{
+}): Promise<{ content: BetaContentBlock[]; usage: BetaUsage; responseId?: string; stopReason: 'end_turn' | 'tool_use' | 'max_tokens' }>{
   const deployment = resolveAzureOpenAIDeployment(params.model)
   const endpoint = resolveAzureOpenAIEndpoint()
   const headers = getAzureOpenAIHeaders()

@@ -49,8 +49,8 @@ const larkClient = new Lark.Client({
 const bridge = new WsBridge(config.serverUrl, 'feishu')
 const dedup = new MessageDedup()
 const sessionStore = new SessionStore()
-const httpClient = new AdapterHttpClient(config.serverUrl)
 const defaultWorkDir = getConfiguredWorkDir(config, config.feishu)
+const httpClient = new AdapterHttpClient(config.serverUrl, { allowedProjectRoots: [defaultWorkDir] })
 
 // Attachment plumbing — shared by inbound (download) and outbound (upload) paths.
 const attachmentStore = new AttachmentStore()

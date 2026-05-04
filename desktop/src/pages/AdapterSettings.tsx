@@ -125,6 +125,12 @@ export function AdapterSettings() {
         if (result.message) {
           setWechatStatus(result.message)
         }
+        if (result.status === 'expired' || result.status === 'not_started') {
+          setWechatQrUrl(null)
+          setWechatSessionKey(null)
+          setIsWechatBinding(false)
+          return
+        }
       } catch (err) {
         if (!cancelled) setWechatStatus(err instanceof Error ? err.message : 'WeChat bind failed')
       }

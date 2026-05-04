@@ -31,6 +31,7 @@ describe('useScheduledTaskDesktopNotifications', () => {
     listMock.mockReset()
     getRecentRunsMock.mockReset()
     notifyDesktopMock.mockReset()
+    notifyDesktopMock.mockResolvedValue(true)
   })
 
   it('does not notify old runs on first poll and notifies new desktop-enabled task runs later', async () => {
@@ -125,5 +126,44 @@ describe('useScheduledTaskDesktopNotifications', () => {
     await vi.advanceTimersByTimeAsync(30_000)
 
     expect(notifyDesktopMock).not.toHaveBeenCalled()
+  })
+
+  it('does not mark a run as notified when desktop notification delivery fails', async () => {
+    notifyDesktopMock
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    listMock.mockResolvedValue({
+      tasks: [{
+        id: 'task-1',
+        name: 'Daily review',
+        cron: '* * * * *',
+        prompt: 'review',
+        enabled: true,
+        createdAt: 1,
+        notification: { enabled: true, channels: ['desktop'] },
+      }],
+    })
+    getRecentRunsMock
+      .mockResolvedValueOnce({ runs: [] })
+      .mockResolvedValue({
+        runs: [{
+          id: 'run-new',
+          taskId: 'task-1',
+          taskName: 'Daily review',
+          startedAt: '2026-05-03T00:01:00.000Z',
+          completedAt: '2026-05-03T00:01:01.000Z',
+          status: 'completed',
+          prompt: 'review',
+        }],
+      })
+
+    render(<Harness />)
+    await vi.waitFor(() => expect(getRecentRunsMock).toHaveBeenCalledTimes(1))
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.waitFor(() => expect(notifyDesktopMock).toHaveBeenCalledTimes(1))
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.waitFor(() => expect(notifyDesktopMock).toHaveBeenCalledTimes(2))
   })
 })

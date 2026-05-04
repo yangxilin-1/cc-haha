@@ -153,12 +153,16 @@ class AdapterService {
   private async writeConfig(data: AdapterFileConfig): Promise<void> {
     const filePath = getConfigPath()
     const dir = path.dirname(filePath)
-    await fs.mkdir(dir, { recursive: true })
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
 
     const tmpFile = `${filePath}.tmp.${Date.now()}`
     try {
-      await fs.writeFile(tmpFile, JSON.stringify(data, null, 2) + '\n', 'utf-8')
+      await fs.writeFile(tmpFile, JSON.stringify(data, null, 2) + '\n', {
+        encoding: 'utf-8',
+        mode: 0o600,
+      })
       await fs.rename(tmpFile, filePath)
+      await fs.chmod(filePath, 0o600).catch(() => {})
     } catch (err) {
       await fs.unlink(tmpFile).catch(() => {})
       throw ApiError.internal(`Failed to write adapter config: ${err}`)

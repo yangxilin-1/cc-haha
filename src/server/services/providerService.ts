@@ -393,8 +393,13 @@ export class ProviderService {
     const index = await this.readIndex()
     if (index.activeId) {
       const provider = index.providers.find(p => p.id === index.activeId)
-      if (provider?.apiKey) {
-        return { hasAuth: true, source: 'cc-haha-provider', activeProvider: provider.name }
+      if (provider) {
+        const presetDefaultEnv = getPresetDefaultEnv(provider.presetId)
+        const needsProxy = provider.apiFormat != null && provider.apiFormat !== 'anthropic'
+        const authEnv = buildProviderAuthEnv(provider, presetDefaultEnv, needsProxy)
+        if (Object.values(authEnv).some(value => value.length > 0)) {
+          return { hasAuth: true, source: 'cc-haha-provider', activeProvider: provider.name }
+        }
       }
     }
 

@@ -57,6 +57,19 @@ describe('Adapters API', () => {
     expect(json.wechat.accountId).toBe('bot-1')
   })
 
+  it('writes adapter credentials with owner-only permissions', async () => {
+    const put = makeRequest('PUT', '/api/adapters', {
+      telegram: {
+        botToken: 'telegram-secret-token',
+      },
+    })
+    expect((await handleAdaptersApi(put.req, put.url, put.segments)).status).toBe(200)
+
+    const configPath = path.join(tmpDir, 'adapters.json')
+    const stat = await fs.stat(configPath)
+    expect(stat.mode & 0o777).toBe(0o600)
+  })
+
   it('masks and preserves DingTalk client secrets', async () => {
     const put = makeRequest('PUT', '/api/adapters', {
       dingtalk: {
