@@ -143,6 +143,18 @@ export async function handleAdaptersApi(
     if (tail[0] === 'wechat') {
       return handleWechatAdaptersApi(req, tail.slice(1))
     }
+    if (tail[0] === 'dingtalk' && req.method === 'POST' && tail[1] === 'unbind') {
+      await adapterService.updateConfig({
+        dingtalk: {
+          clientId: undefined,
+          clientSecret: undefined,
+          allowedUsers: [],
+          pairedUsers: [],
+          permissionCardTemplateId: undefined,
+        },
+      })
+      return Response.json(await adapterService.getConfig())
+    }
     if (tail[0] === 'dingtalk' && tail[1] === 'registration') {
       if (req.method === 'POST' && tail[2] === 'begin') {
         return Response.json(await beginDingtalkRegistration())

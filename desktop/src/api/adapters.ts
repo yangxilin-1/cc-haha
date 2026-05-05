@@ -41,6 +41,10 @@ export const adaptersApi = {
     return api.post<AdapterFileConfig>('/api/adapters/wechat/unbind', {})
   },
 
+  unbindDingtalk() {
+    return api.post<AdapterFileConfig>('/api/adapters/dingtalk/unbind', {})
+  },
+
   beginDingtalkRegistration() {
     return api.post<DingtalkRegistrationBegin>('/api/adapters/dingtalk/registration/begin', {})
   },

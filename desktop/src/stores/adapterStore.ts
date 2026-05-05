@@ -132,13 +132,9 @@ export const useAdapterStore = create<AdapterStore>((set, get) => ({
   },
 
   unbindDingtalkBot: async () => {
-    await get().updateConfig({
-      dingtalk: {
-        clientId: undefined,
-        clientSecret: undefined,
-        pairedUsers: [],
-      },
-    })
+    const config = await adaptersApi.unbindDingtalk()
+    set({ config })
+    void notifyTauriRestartAdapters()
   },
 
   removePairedUser: async (platform, userId) => {

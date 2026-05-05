@@ -125,4 +125,27 @@ describe('Adapters API', () => {
     expect(json.wechat.allowedUsers).toEqual([])
     expect(json.wechat.pairedUsers).toEqual([])
   })
+
+  it('clears DingTalk credentials on unbind', async () => {
+    const put = makeRequest('PUT', '/api/adapters', {
+      dingtalk: {
+        clientId: 'ding-client-1',
+        clientSecret: 'dingtalk-client-secret',
+        allowedUsers: ['ding-allowed-user'],
+        permissionCardTemplateId: 'permission-template',
+        pairedUsers: [{ userId: 'ding-user', displayName: 'DingTalk User', pairedAt: 1 }],
+      },
+    })
+    await handleAdaptersApi(put.req, put.url, put.segments)
+
+    const unbind = makeRequest('POST', '/api/adapters/dingtalk/unbind')
+    const res = await handleAdaptersApi(unbind.req, unbind.url, unbind.segments)
+    expect(res.status).toBe(200)
+    const json = await res.json() as any
+    expect(json.dingtalk.clientId).toBeUndefined()
+    expect(json.dingtalk.clientSecret).toBeUndefined()
+    expect(json.dingtalk.allowedUsers).toEqual([])
+    expect(json.dingtalk.permissionCardTemplateId).toBeUndefined()
+    expect(json.dingtalk.pairedUsers).toEqual([])
+  })
 })

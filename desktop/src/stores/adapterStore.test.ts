@@ -7,6 +7,7 @@ describe('adapterStore IM pairing behavior', () => {
     startWechatLogin: vi.fn(),
     pollWechatLogin: vi.fn(),
     unbindWechat: vi.fn(),
+    unbindDingtalk: vi.fn(),
     beginDingtalkRegistration: vi.fn(),
     pollDingtalkRegistration: vi.fn(),
   }
@@ -57,6 +58,19 @@ describe('adapterStore IM pairing behavior', () => {
     await useAdapterStore.getState().unbindWechatAccount()
 
     expect(adaptersApi.unbindWechat).toHaveBeenCalledTimes(1)
+    expect(useAdapterStore.getState().config).toBe(nextConfig)
+  })
+
+  it('unbinds the DingTalk bot through the explicit bot action', async () => {
+    const nextConfig = { dingtalk: { pairedUsers: [], allowedUsers: [] } }
+    adaptersApi.unbindDingtalk.mockResolvedValue(nextConfig)
+
+    const { useAdapterStore } = await import('./adapterStore')
+
+    await useAdapterStore.getState().unbindDingtalkBot()
+
+    expect(adaptersApi.updateConfig).not.toHaveBeenCalled()
+    expect(adaptersApi.unbindDingtalk).toHaveBeenCalledTimes(1)
     expect(useAdapterStore.getState().config).toBe(nextConfig)
   })
 })
