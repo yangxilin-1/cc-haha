@@ -13,6 +13,7 @@ import { sanitizePath as sanitizePortablePath } from '../../utils/sessionStorage
 import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
 import { calculateUSDCost, MODEL_COSTS } from '../../utils/modelCost.js'
 import {
+  calculateCurrentContextTokenTotal,
   MODEL_CONTEXT_WINDOW_DEFAULT,
   getContextWindowForModel,
   getModelMaxOutputTokens,
@@ -891,12 +892,19 @@ export class SessionService {
     if (!latest) return null
 
     const rawMaxTokens = this.getTranscriptContextWindow(latest.model)
-    const totalTokens = latest.inputTokens + latest.cacheReadInputTokens + latest.cacheCreationInputTokens
+    const promptTokens = latest.inputTokens + latest.cacheReadInputTokens + latest.cacheCreationInputTokens
+    const totalTokens = calculateCurrentContextTokenTotal(promptTokens, {
+      input_tokens: latest.inputTokens,
+      output_tokens: latest.outputTokens,
+      cache_read_input_tokens: latest.cacheReadInputTokens,
+      cache_creation_input_tokens: latest.cacheCreationInputTokens,
+    })
     const percentage = rawMaxTokens > 0 ? Math.round((totalTokens / rawMaxTokens) * 100) : 0
     const categories: TranscriptContextEstimate['categories'] = [
       { name: 'Input tokens', tokens: latest.inputTokens, color: '#8f3217' },
       { name: 'Cache read', tokens: latest.cacheReadInputTokens, color: '#0f5c8f' },
       { name: 'Cache write', tokens: latest.cacheCreationInputTokens, color: '#7c3aed' },
+      { name: 'Output tokens', tokens: latest.outputTokens, color: '#2f7d32' },
       { name: 'Free space', tokens: Math.max(0, rawMaxTokens - totalTokens), color: '#a1a1aa', isDeferred: true },
     ].filter((category) => category.tokens > 0)
 

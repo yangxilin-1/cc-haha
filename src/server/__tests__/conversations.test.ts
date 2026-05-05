@@ -372,8 +372,9 @@ describe('ConversationService', () => {
       expect(usage?.models[0]?.model).toBe('claude-sonnet-4-6')
       expect(usage?.models[0]?.contextWindow).toBe(200_000)
       expect(contextEstimate?.model).toBe('claude-sonnet-4-6')
-      expect(contextEstimate?.totalTokens).toBe(100)
+      expect(contextEstimate?.totalTokens).toBe(120)
       expect(contextEstimate?.rawMaxTokens).toBe(200_000)
+      expect(contextEstimate?.categories.some((category) => category.name === 'Output tokens' && category.tokens === 20)).toBe(true)
     } finally {
       if (previousConfigDir === undefined) {
         delete process.env.CLAUDE_CONFIG_DIR
