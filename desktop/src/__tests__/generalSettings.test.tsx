@@ -8,7 +8,7 @@ import { useUIStore } from '../stores/uiStore'
 import { useUpdateStore } from '../stores/updateStore'
 import type { SavedProvider } from '../types/provider'
 import type { ProviderPreset } from '../types/providerPreset'
-import type { ThemeMode } from '../types/settings'
+import type { ThemeMode, UpdateProxySettings } from '../types/settings'
 
 const MOCK_DELETE_PROVIDER = vi.fn()
 const MOCK_GET_SETTINGS = vi.fn()
@@ -799,6 +799,13 @@ describe('Settings > Providers tab', () => {
 describe('Settings > About tab', () => {
   beforeEach(() => {
     useUIStore.setState({ pendingSettingsTab: 'about' })
+    useSettingsStore.setState({
+      locale: 'en',
+      updateProxy: { mode: 'system', url: '' },
+      setUpdateProxy: vi.fn().mockImplementation(async (next: UpdateProxySettings) => {
+        useSettingsStore.setState({ updateProxy: next })
+      }),
+    })
     useUpdateStore.setState({
       status: 'available',
       availableVersion: '0.1.5',
@@ -845,5 +852,58 @@ describe('Settings > About tab', () => {
 
     expect(await screen.findByText('Downloading update... 1.5 KB downloaded')).toBeInTheDocument()
     expect(screen.queryByText('Downloading update... 0%')).not.toBeInTheDocument()
+  })
+
+  it('saves a manual update proxy from the advanced update controls', async () => {
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced update proxy/i }))
+    expect(screen.getByRole('button', { name: /System proxy/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('This only affects app update checks and downloads.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /Manual proxy/i }))
+    const proxyInput = screen.getByLabelText('Proxy URL')
+    const saveButton = screen.getByRole('button', { name: 'Save' })
+
+    expect(screen.getByText('Enter a proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: 'socks5://127.0.0.1:7890' } })
+    expect(screen.getByText('Enter an HTTP or HTTPS proxy URL.')).toBeInTheDocument()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(proxyInput, { target: { value: '  http://127.0.0.1:7890  ' } })
+    expect(screen.getByText('HTTP and HTTPS proxy URLs are supported, for example http://127.0.0.1:7890.')).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    expect(useSettingsStore.getState().setUpdateProxy).toHaveBeenCalledWith({
+      mode: 'manual',
+      url: 'http://127.0.0.1:7890',
+    })
+  })
+
+  it('can switch update proxy settings back to system mode', async () => {
+    useSettingsStore.setState({
+      updateProxy: { mode: 'manual', url: 'http://127.0.0.1:7890' },
+    })
+    render(<Settings />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Advanced update proxy/i }))
+    expect(screen.getByRole('button', { name: /Manual proxy/i })).toHaveAttribute('aria-pressed', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: /System proxy/i }))
+    const saveButton = screen.getByRole('button', { name: 'Save' })
+
+    await act(async () => {
+      fireEvent.click(saveButton)
+    })
+
+    expect(useSettingsStore.getState().setUpdateProxy).toHaveBeenCalledWith({
+      mode: 'system',
+      url: 'http://127.0.0.1:7890',
+    })
   })
 })

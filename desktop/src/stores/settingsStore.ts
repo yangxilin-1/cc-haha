@@ -12,6 +12,8 @@ import {
   type EffortLevel,
   type ModelInfo,
   type ThemeMode,
+  type UpdateProxyMode,
+  type UpdateProxySettings,
   type WebSearchSettings,
 } from '../types/settings'
 import type { Locale } from '../i18n'
@@ -54,6 +56,7 @@ type SettingsStore = {
   desktopNotificationsEnabled: boolean
   desktopTerminal: DesktopTerminalSettings
   webSearch: WebSearchSettings
+  updateProxy: UpdateProxySettings
   h5Access: H5AccessSettings
   h5AccessError: string | null
   responseLanguage: string
@@ -73,6 +76,7 @@ type SettingsStore = {
   setDesktopNotificationsEnabled: (enabled: boolean) => Promise<void>
   setDesktopTerminal: (settings: DesktopTerminalSettings) => Promise<void>
   setWebSearch: (settings: WebSearchSettings) => Promise<void>
+  setUpdateProxy: (settings: UpdateProxySettings) => Promise<void>
   enableH5Access: () => Promise<string>
   disableH5Access: () => Promise<void>
   regenerateH5AccessToken: () => Promise<string>
@@ -96,6 +100,11 @@ const DEFAULT_DESKTOP_TERMINAL_SETTINGS: DesktopTerminalSettings = {
   customShellPath: '',
 }
 
+const DEFAULT_UPDATE_PROXY_SETTINGS: UpdateProxySettings = {
+  mode: 'system',
+  url: '',
+}
+
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   permissionMode: 'default',
   currentModel: null,
@@ -109,6 +118,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   desktopNotificationsEnabled: false,
   desktopTerminal: DEFAULT_DESKTOP_TERMINAL_SETTINGS,
   webSearch: { mode: 'auto', tavilyApiKey: '', braveApiKey: '' },
+  updateProxy: DEFAULT_UPDATE_PROXY_SETTINGS,
   h5Access: DEFAULT_H5_ACCESS_SETTINGS,
   h5AccessError: null,
   responseLanguage: '',
@@ -148,6 +158,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         desktopNotificationsEnabled: userSettings.desktopNotificationsEnabled === true,
         desktopTerminal: normalizeDesktopTerminalSettings(userSettings.desktopTerminal),
         webSearch: normalizeWebSearchSettings(userSettings.webSearch),
+        updateProxy: normalizeUpdateProxySettings(userSettings.updateProxy),
         h5Access: h5AccessResult.settings,
         h5AccessError: h5AccessResult.error,
         responseLanguage: typeof userSettings.language === 'string' ? userSettings.language : '',
@@ -274,6 +285,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
   },
 
+  setUpdateProxy: async (settings) => {
+    const prev = get().updateProxy
+    const next = normalizeUpdateProxySettings(settings)
+    set({ updateProxy: next })
+    try {
+      await settingsApi.updateUser({ updateProxy: next })
+    } catch (error) {
+      set({ updateProxy: prev })
+      throw error
+    }
+  },
+
   enableH5Access: async () => {
     set({ h5AccessError: null })
     try {
@@ -348,6 +371,22 @@ function normalizeWebSearchSettings(settings: WebSearchSettings | undefined): We
     mode: settings?.mode ?? 'auto',
     tavilyApiKey: settings?.tavilyApiKey ?? '',
     braveApiKey: settings?.braveApiKey ?? '',
+  }
+}
+
+function isUpdateProxyMode(value: unknown): value is UpdateProxyMode {
+  return value === 'system' || value === 'manual'
+}
+
+function normalizeUpdateProxySettings(
+  settings: Partial<UpdateProxySettings> | undefined,
+): UpdateProxySettings {
+  const mode = isUpdateProxyMode(settings?.mode)
+    ? settings.mode
+    : DEFAULT_UPDATE_PROXY_SETTINGS.mode
+  return {
+    mode,
+    url: typeof settings?.url === 'string' ? settings.url.trim() : '',
   }
 }
 

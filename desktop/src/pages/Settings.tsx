@@ -9,7 +9,7 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
-import type { PermissionMode, EffortLevel, ThemeMode, WebSearchMode } from '../types/settings'
+import type { PermissionMode, EffortLevel, ThemeMode, UpdateProxyMode, WebSearchMode } from '../types/settings'
 import type { Locale } from '../i18n'
 import type { SavedProvider, UpdateProviderInput, ProviderTestResult, ModelMapping, ApiFormat, ProviderAuthStrategy } from '../types/provider'
 import type { ProviderPreset } from '../types/providerPreset'
@@ -2818,9 +2818,20 @@ const SOCIAL_LINKS = [
   { name: 'Xiaohongshu', icon: '/icons/xiaohongshu.svg', url: 'https://www.xiaohongshu.com/user/profile/5f58bd990000000001003753', label: '程序员阿江-Relakkes' },
 ] as const
 
+function isValidUpdateProxyUrl(value: string) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function AboutSettings() {
   const t = useTranslation()
   const [version, setVersion] = useState('')
+  const updateProxy = useSettingsStore((s) => s.updateProxy)
+  const setUpdateProxy = useSettingsStore((s) => s.setUpdateProxy)
   const updateStatus = useUpdateStore((s) => s.status)
   const availableVersion = useUpdateStore((s) => s.availableVersion)
   const releaseNotes = useUpdateStore((s) => s.releaseNotes)
@@ -2832,6 +2843,10 @@ function AboutSettings() {
   const checkForUpdates = useUpdateStore((s) => s.checkForUpdates)
   const installUpdate = useUpdateStore((s) => s.installUpdate)
   const initialize = useUpdateStore((s) => s.initialize)
+  const [showUpdateProxyAdvanced, setShowUpdateProxyAdvanced] = useState(false)
+  const [updateProxyDraft, setUpdateProxyDraft] = useState(updateProxy)
+  const [updateProxySaveError, setUpdateProxySaveError] = useState<string | null>(null)
+  const [isSavingUpdateProxy, setIsSavingUpdateProxy] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -2854,6 +2869,11 @@ function AboutSettings() {
     void initialize()
   }, [initialize])
 
+  useEffect(() => {
+    setUpdateProxyDraft(updateProxy)
+    setUpdateProxySaveError(null)
+  }, [updateProxy])
+
   const openUrl = (url: string) => {
     import('@tauri-apps/plugin-shell').then((mod) => mod.open(url)).catch(() => window.open(url, '_blank'))
   }
@@ -2867,6 +2887,48 @@ function AboutSettings() {
           day: 'numeric',
         })
       : null
+  const updateProxyModes: Array<{ value: UpdateProxyMode; label: string; description: string }> = [
+    {
+      value: 'system',
+      label: t('update.proxyModeSystem'),
+      description: t('update.proxyModeSystemDescription'),
+    },
+    {
+      value: 'manual',
+      label: t('update.proxyModeManual'),
+      description: t('update.proxyModeManualDescription'),
+    },
+  ]
+  const manualProxyUrl = updateProxyDraft.url.trim()
+  const manualProxyError =
+    updateProxyDraft.mode === 'manual' && !manualProxyUrl
+      ? t('update.proxyUrlRequired')
+      : updateProxyDraft.mode === 'manual' && !isValidUpdateProxyUrl(manualProxyUrl)
+        ? t('update.proxyUrlInvalid')
+        : null
+  const updateProxyDirty =
+    updateProxyDraft.mode !== updateProxy.mode ||
+    updateProxyDraft.url.trim() !== updateProxy.url.trim()
+
+  const saveUpdateProxy = async () => {
+    if (manualProxyError) {
+      setUpdateProxySaveError(manualProxyError)
+      return
+    }
+
+    setIsSavingUpdateProxy(true)
+    setUpdateProxySaveError(null)
+    try {
+      await setUpdateProxy({
+        mode: updateProxyDraft.mode,
+        url: manualProxyUrl,
+      })
+    } catch (error) {
+      setUpdateProxySaveError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIsSavingUpdateProxy(false)
+    }
+  }
 
   const hasKnownProgress = typeof totalBytes === 'number' && totalBytes > 0
   const downloadedText = formatBytes(downloadedBytes)
@@ -2969,6 +3031,89 @@ function AboutSettings() {
               {t('update.checkedAt', { time: checkedAtText })}
             </p>
           )}
+
+          <div className="mt-3 border-t border-[var(--color-border)]/60 pt-3">
+            <button
+              type="button"
+              onClick={() => setShowUpdateProxyAdvanced((value) => !value)}
+              className="flex w-full items-center justify-between gap-3 rounded-md text-left text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+              aria-expanded={showUpdateProxyAdvanced}
+            >
+              <span>{t('update.proxyAdvanced')}</span>
+              <span className="material-symbols-outlined text-[18px]">
+                {showUpdateProxyAdvanced ? 'expand_less' : 'expand_more'}
+              </span>
+            </button>
+
+            {showUpdateProxyAdvanced && (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  {updateProxyModes.map((mode) => (
+                    <button
+                      key={mode.value}
+                      type="button"
+                      onClick={() => {
+                        setUpdateProxyDraft((current) => ({ ...current, mode: mode.value }))
+                        setUpdateProxySaveError(null)
+                      }}
+                      aria-pressed={updateProxyDraft.mode === mode.value}
+                      className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                        updateProxyDraft.mode === mode.value
+                          ? 'border-[var(--color-brand)] bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]'
+                          : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">{mode.label}</div>
+                      <div className="mt-1 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
+                        {mode.description}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {updateProxyDraft.mode === 'manual' && (
+                  <div>
+                    <Input
+                      id="update-proxy-url"
+                      label={t('update.proxyUrl')}
+                      value={updateProxyDraft.url}
+                      placeholder="http://127.0.0.1:7890"
+                      autoComplete="off"
+                      onChange={(event) => {
+                        setUpdateProxyDraft((current) => ({ ...current, url: event.target.value }))
+                        setUpdateProxySaveError(null)
+                      }}
+                    />
+                    <p className={`mt-1 text-[11px] leading-4 ${manualProxyError ? 'text-[var(--color-error)]' : 'text-[var(--color-text-tertiary)]'}`}>
+                      {manualProxyError ?? t('update.proxyUrlHint')}
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 text-[11px] leading-4 text-[var(--color-text-tertiary)]">
+                    {t('update.proxyScopeHint')}
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="min-w-[72px] px-4 whitespace-nowrap"
+                    disabled={!updateProxyDirty || !!manualProxyError || isSavingUpdateProxy}
+                    loading={isSavingUpdateProxy}
+                    onClick={() => void saveUpdateProxy()}
+                  >
+                    {t('update.proxySave')}
+                  </Button>
+                </div>
+
+                {updateProxySaveError && (
+                  <p className="text-[11px] leading-4 text-[var(--color-error)]">
+                    {updateProxySaveError}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
 
           {(updateStatus === 'downloading' || updateStatus === 'restarting') && (
             <div className="mt-3">

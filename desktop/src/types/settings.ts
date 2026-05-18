@@ -18,6 +18,13 @@ export type WebSearchSettings = {
   braveApiKey?: string
 }
 
+export type UpdateProxyMode = 'system' | 'manual'
+
+export type UpdateProxySettings = {
+  mode: UpdateProxyMode
+  url: string
+}
+
 export type H5AccessSettings = {
   enabled: boolean
   tokenPreview: string | null
@@ -54,6 +61,7 @@ export type UserSettings = {
   skipWebFetchPreflight?: boolean
   desktopNotificationsEnabled?: boolean
   webSearch?: WebSearchSettings
+  updateProxy?: Partial<UpdateProxySettings>
   language?: string
   desktopTerminal?: Partial<DesktopTerminalSettings>
   [key: string]: unknown
