@@ -281,9 +281,14 @@ async function handleSessionWorkspaceRoute(
 }
 
 async function createSession(req: Request): Promise<Response> {
-  let body: { workDir?: string; repository?: CreateSessionRepositoryOptions; permissionMode?: string }
+  let body: {
+    workDir?: string
+    repository?: CreateSessionRepositoryOptions
+    permissionMode?: string
+    mode?: 'code' | 'chat'
+  }
   try {
-    body = (await req.json()) as { workDir?: string; repository?: CreateSessionRepositoryOptions; permissionMode?: string }
+    body = (await req.json()) as typeof body
   } catch {
     throw ApiError.badRequest('Invalid JSON body')
   }
@@ -294,6 +299,10 @@ async function createSession(req: Request): Promise<Response> {
 
   if (body.permissionMode !== undefined && typeof body.permissionMode !== 'string') {
     throw ApiError.badRequest('permissionMode must be a string')
+  }
+
+  if (body.mode !== undefined && body.mode !== 'code' && body.mode !== 'chat') {
+    throw ApiError.badRequest('mode must be code or chat')
   }
 
   if (body.repository !== undefined) {
@@ -308,7 +317,7 @@ async function createSession(req: Request): Promise<Response> {
     }
   }
 
-  const result = await sessionService.createSession(body.workDir, body.repository, body.permissionMode)
+  const result = await sessionService.createSession(body.workDir, body.repository, body.permissionMode, body.mode)
   recentProjectsCache = null
   return Response.json(result, { status: 201 })
 }

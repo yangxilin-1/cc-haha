@@ -13,7 +13,9 @@ import { ProviderService } from './providerService.js'
 import {
   OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
   OPENAI_OAUTH_PROVIDER_ENV_KEY,
+  isOpenAIOfficialProviderId,
 } from './openaiOfficialProvider.js'
+import { readOfficialClaudeRuntimeEnvSync } from './officialClaudeSettingsService.js'
 import { sessionService } from './sessionService.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import {
@@ -367,7 +369,7 @@ export class ConversationService {
 
     session.startupPending = false
 
-    if (shouldReplacePlaceholder || !launchInfo) {
+    if ((shouldReplacePlaceholder || !launchInfo) && launchInfo?.mode !== 'chat') {
       await sessionService.appendSessionMetadata(sessionId, {
         workDir: launchWorkDir,
         customTitle: launchInfo?.customTitle ?? null,
@@ -1013,6 +1015,7 @@ export class ConversationService {
       'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS',
       OPENAI_OAUTH_PROVIDER_ENV_KEY,
       OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
+      'OPENAI_API_KEY',
     ] as const
 
     const cleanEnv = await getProcessEnvWithTerminalShellEnvironment()
@@ -1083,11 +1086,8 @@ export class ConversationService {
       ...(explicitProviderEnv
         ? { CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1' }
         : {}),
-      // "官方" 模式 (cc-haha/settings.json 没 provider env) 下,把 CLI 标记为
-      // managed-OAuth,让它忽略外部 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
-      // 残留、只走用户 /login 的 OAuth token。自定义 provider 模式绝不能设,
-      // 否则 CLI 会忽略 provider 的 AUTH_TOKEN、错误地走 OAuth 打到第三方
-      // endpoint。详见 src/utils/auth.ts isManagedOAuthContext()。
+      // 官方 Claude 模式优先使用官方 ~/.claude/settings.json 里的 env。
+      // 如果没有可用官方 env 授权，再保留桌面登录 OAuth token 作为 fallback。
       ...(explicitProviderEnv ?? {}),
       ...networkEnv,
       ...(this.shouldMarkManagedOAuth(options?.providerId)
@@ -1112,14 +1112,23 @@ export class ConversationService {
   }
 
   /**
-   * 官方模式下构造 CLI 子进程的 auth env:
-   * - CLAUDE_CODE_ENTRYPOINT=claude-desktop 让 CLI 忽略外部残留 ANTHROPIC_* env
-   * - 如果 haha 自管的 oauth.json 里有可用 token,注入 CLAUDE_CODE_OAUTH_TOKEN
-   *   让 CLI 直接拿 env 里的 token,不碰 Keychain,绕开 macOS ACL 静默拒绝
-   *   (这是 DMG 安装 .app 后 403 "Request not allowed" 的唯一根治方案)
+   * 官方 Claude 模式下构造 CLI 子进程的 auth env:
+   * - 优先只读用户官方 ~/.claude/settings.json 的 env 配置
+   * - 若官方配置没有可用 auth,再使用桌面登录保存的 OAuth token fallback
    */
   private async buildOfficialOAuthEnv(): Promise<Record<string, string>> {
+    const officialEnv = readOfficialClaudeRuntimeEnvSync()
+    const hasOfficialAuth = [
+      'ANTHROPIC_AUTH_TOKEN',
+      'ANTHROPIC_API_KEY',
+    ].some((key) => officialEnv[key]?.trim())
+
+    if (hasOfficialAuth) {
+      return officialEnv
+    }
+
     const env: Record<string, string> = {
+      ...officialEnv,
       CLAUDE_CODE_ENTRYPOINT: 'claude-desktop',
     }
     try {
@@ -1175,6 +1184,7 @@ export class ConversationService {
         'CLAUDE_CODE_MODEL_CONTEXT_WINDOWS',
         OPENAI_OAUTH_PROVIDER_ENV_KEY,
         OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
+        'OPENAI_API_KEY',
       ].some((key) => typeof env[key] === 'string' && env[key]!.trim().length > 0)
     } catch {
       return false
@@ -1200,7 +1210,24 @@ export class ConversationService {
 
     const configDir =
       process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    const providersIndexPath = path.join(configDir, 'cc-haha', 'providers.json')
     const settingsPath = path.join(configDir, 'cc-haha', 'settings.json')
+
+    try {
+      const raw = fs.readFileSync(providersIndexPath, 'utf-8')
+      const parsed = JSON.parse(raw) as { activeId?: unknown; activeProviderId?: unknown }
+      const activeId = typeof parsed.activeId === 'string'
+        ? parsed.activeId
+        : typeof parsed.activeProviderId === 'string'
+          ? parsed.activeProviderId
+          : null
+      if (isOpenAIOfficialProviderId(activeId)) {
+        return false
+      }
+    } catch {
+      // Missing or invalid provider index; fall back to settings inspection.
+    }
+
     try {
       const raw = fs.readFileSync(settingsPath, 'utf-8')
       const parsed = JSON.parse(raw) as { env?: Record<string, string> }

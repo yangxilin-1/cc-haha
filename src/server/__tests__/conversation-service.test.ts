@@ -12,8 +12,11 @@ import { resetTerminalShellEnvironmentCacheForTests } from '../../utils/terminal
 describe('ConversationService', () => {
   let tmpDir: string
   let originalConfigDir: string | undefined
+  let originalOfficialClaudeConfigDir: string | undefined
+  let originalOfficialCodexConfigDir: string | undefined
   let originalApiKey: string | undefined
   let originalAuthToken: string | undefined
+  let originalOpenAIApiKey: string | undefined
   let originalBaseUrl: string | undefined
   let originalModel: string | undefined
   let originalEntrypoint: string | undefined
@@ -30,8 +33,11 @@ describe('ConversationService', () => {
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-haha-conversation-service-'))
     originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+    originalOfficialClaudeConfigDir = process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR
+    originalOfficialCodexConfigDir = process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR
     originalApiKey = process.env.ANTHROPIC_API_KEY
     originalAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
+    originalOpenAIApiKey = process.env.OPENAI_API_KEY
     originalBaseUrl = process.env.ANTHROPIC_BASE_URL
     originalModel = process.env.ANTHROPIC_MODEL
     originalEntrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
@@ -46,6 +52,8 @@ describe('ConversationService', () => {
     originalDisableTerminalShellEnv = process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV
 
     process.env.CLAUDE_CONFIG_DIR = tmpDir
+    process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR = path.join(tmpDir, 'official-claude')
+    process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR = path.join(tmpDir, 'official-codex')
     process.env.ANTHROPIC_API_KEY = 'stale-parent-api-key'
     process.env.ANTHROPIC_AUTH_TOKEN = 'test-token'
     process.env.ANTHROPIC_BASE_URL = 'https://example.invalid/anthropic'
@@ -57,6 +65,7 @@ describe('ConversationService', () => {
     delete process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST
     delete process.env.CLAUDE_CODE_DIAGNOSTICS_FILE
     delete process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
+    delete process.env.OPENAI_API_KEY
     process.env.CC_HAHA_DISABLE_TERMINAL_SHELL_ENV = '1'
     resetTerminalShellEnvironmentCacheForTests()
   })
@@ -65,11 +74,20 @@ describe('ConversationService', () => {
     if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
     else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
 
+    if (originalOfficialClaudeConfigDir === undefined) delete process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR
+    else process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR = originalOfficialClaudeConfigDir
+
+    if (originalOfficialCodexConfigDir === undefined) delete process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR
+    else process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR = originalOfficialCodexConfigDir
+
     if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
     else process.env.ANTHROPIC_API_KEY = originalApiKey
 
     if (originalAuthToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
     else process.env.ANTHROPIC_AUTH_TOKEN = originalAuthToken
+
+    if (originalOpenAIApiKey === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = originalOpenAIApiKey
 
     if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL
     else process.env.ANTHROPIC_BASE_URL = originalBaseUrl
@@ -438,6 +456,42 @@ describe('ConversationService', () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
     expect(env.CLAUDE_CODE_ENTRYPOINT).toBe('claude-desktop')
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('forced-official-token')
+  })
+
+  test('buildChildEnv reads official Claude settings before desktop OAuth fallback', async () => {
+    const officialClaudeDir = process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR!
+    await fs.mkdir(officialClaudeDir, { recursive: true })
+    await fs.writeFile(
+      path.join(officialClaudeDir, 'settings.json'),
+      JSON.stringify({
+        env: {
+          ANTHROPIC_AUTH_TOKEN: 'official-settings-token',
+          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+          ANTHROPIC_MODEL: 'claude-from-settings',
+        },
+      }),
+      'utf-8',
+    )
+
+    const { hahaOAuthService } = await import('../services/hahaOAuthService.js')
+    await hahaOAuthService.saveTokens({
+      accessToken: 'desktop-oauth-token-that-must-not-win',
+      refreshToken: 'desktop-oauth-refresh',
+      expiresAt: Date.now() + 30 * 60_000,
+      scopes: ['user:inference'],
+      subscriptionType: 'max',
+    })
+
+    const service = new ConversationService() as any
+    const env = (await service.buildChildEnv('/tmp', undefined, {
+      providerId: null,
+    })) as Record<string, string>
+
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe('official-settings-token')
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://api.anthropic.com')
+    expect(env.ANTHROPIC_MODEL).toBe('claude-from-settings')
+    expect(env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined()
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
   })
 
   test('buildChildEnv does not inject Claude OAuth when ChatGPT Official is active', async () => {

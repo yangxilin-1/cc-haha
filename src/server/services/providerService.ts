@@ -22,6 +22,8 @@ import {
   isOpenAIOfficialProviderId,
 } from './openaiOfficialProvider.js'
 import { hahaOpenAIOAuthService } from './hahaOpenAIOAuthService.js'
+import { officialClaudeSettingsService } from './officialClaudeSettingsService.js'
+import { officialCodexAuthService } from './officialCodexAuthService.js'
 import {
   CURRENT_PROVIDER_INDEX_SCHEMA_VERSION,
   ensurePersistentStorageUpgraded,
@@ -244,11 +246,17 @@ export class ProviderService {
 
   private buildManagedEnv(
     provider: SavedProvider,
-    options?: { proxyPath?: string },
+    options?: {
+      proxyPath?: string
+      includeSensitiveAuth?: boolean
+      includeDesktopOAuthFallback?: boolean
+    },
   ): Record<string, string> {
     return buildProviderManagedEnv(provider, {
       proxyPath: options?.proxyPath,
       serverPort: ProviderService.serverPort,
+      includeSensitiveAuth: options?.includeSensitiveAuth,
+      includeDesktopOAuthFallback: options?.includeDesktopOAuthFallback,
     })
   }
 
@@ -273,7 +281,10 @@ export class ProviderService {
           ...settings,
           env: {
             ...cleanedEnv,
-            ...this.buildManagedEnv(provider),
+            ...this.buildManagedEnv(provider, {
+              includeSensitiveAuth: provider.runtimeKind !== 'openai_oauth',
+              includeDesktopOAuthFallback: provider.runtimeKind !== 'openai_oauth',
+            }),
           },
         },
         result: undefined,
@@ -317,14 +328,23 @@ export class ProviderService {
    */
   async checkAuthStatus(): Promise<{
     hasAuth: boolean
-    source: 'cc-haha-provider' | 'openai-oauth' | 'original-settings' | 'env' | 'none'
+    source: 'cc-haha-provider' | 'openai-oauth' | 'official-codex' | 'original-settings' | 'env' | 'none'
     activeProvider?: string
   }> {
     // 1. Check cc-haha active provider
     const index = await this.readIndex()
     if (index.activeId) {
       if (isOpenAIOfficialProviderId(index.activeId)) {
-        const tokens = await hahaOpenAIOAuthService.ensureFreshTokens()
+        const codexEnv = await officialCodexAuthService.getRuntimeEnv()
+        if (codexEnv.OPENAI_API_KEY) {
+          return {
+            hasAuth: true,
+            source: 'official-codex',
+            activeProvider: OPENAI_OFFICIAL_PROVIDER.name,
+          }
+        }
+
+        const tokens = await hahaOpenAIOAuthService.loadTokens()
         if (tokens?.accessToken && tokens.refreshToken) {
           return {
             hasAuth: true,
@@ -357,10 +377,7 @@ export class ProviderService {
 
     // 3. Check original ~/.claude/settings.json
     try {
-      const originalPath = path.join(this.getConfigDir(), 'settings.json')
-      const raw = await fs.readFile(originalPath, 'utf-8')
-      const settings = JSON.parse(raw) as { env?: Record<string, string> }
-      const env = settings.env ?? {}
+      const env = await officialClaudeSettingsService.getRuntimeEnv()
       if (env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY) {
         return { hasAuth: true, source: 'original-settings' }
       }

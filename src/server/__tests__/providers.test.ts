@@ -15,11 +15,17 @@ import type { CreateProviderInput } from '../types/provider.js'
 
 let tmpDir: string
 let originalConfigDir: string | undefined
+let originalOfficialClaudeConfigDir: string | undefined
+let originalOfficialCodexConfigDir: string | undefined
 
 async function setup() {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-test-'))
   originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+  originalOfficialClaudeConfigDir = process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR
+  originalOfficialCodexConfigDir = process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR
   process.env.CLAUDE_CONFIG_DIR = tmpDir
+  process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR = path.join(tmpDir, 'official-claude')
+  process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR = path.join(tmpDir, 'official-codex')
 }
 
 async function teardown() {
@@ -27,6 +33,16 @@ async function teardown() {
     process.env.CLAUDE_CONFIG_DIR = originalConfigDir
   } else {
     delete process.env.CLAUDE_CONFIG_DIR
+  }
+  if (originalOfficialClaudeConfigDir !== undefined) {
+    process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR = originalOfficialClaudeConfigDir
+  } else {
+    delete process.env.CC_HAHA_OFFICIAL_CLAUDE_CONFIG_DIR
+  }
+  if (originalOfficialCodexConfigDir !== undefined) {
+    process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR = originalOfficialCodexConfigDir
+  } else {
+    delete process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR
   }
   await fs.rm(tmpDir, { recursive: true, force: true })
 }
@@ -337,7 +353,7 @@ describe('ProviderService', () => {
         })
       })
 
-      test('activating ChatGPT Official writes OpenAI OAuth runtime env without Anthropic auth or proxy env', async () => {
+      test('activating ChatGPT Official writes routing env without persisting official auth', async () => {
         const svc = new ProviderService()
 
         await svc.activateProvider('openai-official')
@@ -347,9 +363,8 @@ describe('ProviderService', () => {
         expect(config.activeId).toBe('openai-official')
         const env = settings.env as Record<string, string>
         expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
-        expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
-          path.join(tmpDir, 'cc-haha', 'openai-oauth.json'),
-        )
+        expect(env.OPENAI_CODEX_OAUTH_FILE).toBeUndefined()
+        expect(env.OPENAI_API_KEY).toBeUndefined()
         expect(env.ANTHROPIC_MODEL).toBe('gpt-5.3-codex')
         expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('gpt-5.4-mini')
         expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('gpt-5.4')
@@ -386,12 +401,54 @@ describe('ProviderService', () => {
         const settings = await readSettings()
         const env = settings.env as Record<string, string>
         expect(env.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
-        expect(env.OPENAI_CODEX_OAUTH_FILE).toBe(
-          path.join(tmpDir, 'cc-haha', 'openai-oauth.json'),
-        )
+        expect(env.OPENAI_CODEX_OAUTH_FILE).toBeUndefined()
+        expect(env.OPENAI_API_KEY).toBeUndefined()
         expect(env.ANTHROPIC_BASE_URL).toBeUndefined()
         expect(env.ANTHROPIC_API_KEY).toBeUndefined()
         expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+      })
+
+      test('ChatGPT Official runtime env reads official Codex auth without writing it to settings', async () => {
+        const officialCodexDir = process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR!
+        await fs.mkdir(officialCodexDir, { recursive: true })
+        await fs.writeFile(
+          path.join(officialCodexDir, 'auth.json'),
+          JSON.stringify({ OPENAI_API_KEY: 'codex-official-key' }),
+          'utf-8',
+        )
+
+        const svc = new ProviderService()
+        const runtimeEnv = await svc.getProviderRuntimeEnv('openai-official')
+
+        expect(runtimeEnv.CC_HAHA_OPENAI_OAUTH_PROVIDER).toBe('1')
+        expect(runtimeEnv.OPENAI_API_KEY).toBe('codex-official-key')
+        expect(runtimeEnv.OPENAI_CODEX_OAUTH_FILE).toBe(
+          path.join(tmpDir, 'cc-haha', 'openai-oauth.json'),
+        )
+
+        await svc.activateProvider('openai-official')
+        const settingsEnv = (await readSettings()).env as Record<string, string>
+        expect(settingsEnv.OPENAI_API_KEY).toBeUndefined()
+        expect(settingsEnv.OPENAI_CODEX_OAUTH_FILE).toBeUndefined()
+      })
+
+      test('auth status reports ChatGPT Official from official Codex auth', async () => {
+        const officialCodexDir = process.env.CC_HAHA_OFFICIAL_CODEX_CONFIG_DIR!
+        await fs.mkdir(officialCodexDir, { recursive: true })
+        await fs.writeFile(
+          path.join(officialCodexDir, 'auth.json'),
+          JSON.stringify({ OPENAI_API_KEY: 'codex-official-key' }),
+          'utf-8',
+        )
+
+        const svc = new ProviderService()
+        await svc.activateProvider('openai-official')
+
+        await expect(svc.checkAuthStatus()).resolves.toMatchObject({
+          hasAuth: true,
+          source: 'official-codex',
+          activeProvider: 'ChatGPT Official',
+        })
       })
 
       test('auth status reports ChatGPT Official from the desktop OpenAI token file', async () => {

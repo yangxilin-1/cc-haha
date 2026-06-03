@@ -15,6 +15,7 @@ import {
 } from './attributionHeaderPolicy.js'
 import {
   OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
+  OPENAI_OFFICIAL_PROVIDER,
   OPENAI_OAUTH_PROVIDER_ENV_KEY,
   buildOpenAIOfficialRuntimeEnv,
   isOpenAIOfficialProviderId,
@@ -36,6 +37,7 @@ export const MANAGED_PROVIDER_ENV_KEYS = [
   MODEL_CONTEXT_WINDOWS_ENV_KEY,
   OPENAI_OAUTH_PROVIDER_ENV_KEY,
   OPENAI_CODEX_OAUTH_FILE_ENV_KEY,
+  'OPENAI_API_KEY',
 ] as const
 
 const CUSTOM_PROVIDER_MODEL_CAPABILITIES = 'thinking,effort,adaptive_thinking,max_effort'
@@ -180,10 +182,18 @@ export function getManagedEnvKeys(): string[] {
 
 export function buildProviderManagedEnv(
   provider: SavedProvider,
-  options?: { proxyPath?: string; serverPort?: number },
+  options?: {
+    proxyPath?: string
+    serverPort?: number
+    includeSensitiveAuth?: boolean
+    includeDesktopOAuthFallback?: boolean
+  },
 ): Record<string, string> {
   if (provider.runtimeKind === 'openai_oauth') {
-    return buildOpenAIOfficialRuntimeEnv()
+    return buildOpenAIOfficialRuntimeEnv({
+      includeOfficialAuth: options?.includeSensitiveAuth !== false,
+      includeDesktopOAuthFallback: options?.includeDesktopOAuthFallback,
+    })
   }
 
   const apiFormat: ApiFormat = provider.apiFormat ?? 'anthropic'
@@ -239,7 +249,9 @@ export function readActiveProviderManagedEnv(
     if (!index?.activeId) return null
 
     if (isOpenAIOfficialProviderId(index.activeId)) {
-      return buildOpenAIOfficialRuntimeEnv()
+      return buildProviderManagedEnv(OPENAI_OFFICIAL_PROVIDER, {
+        serverPort: options?.serverPort,
+      })
     }
 
     const provider = index.providers.find((entry) => entry.id === index.activeId)

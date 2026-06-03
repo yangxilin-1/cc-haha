@@ -47,6 +47,7 @@ export type SessionListItem = {
   createdAt: string
   modifiedAt: string
   messageCount: number
+  mode: 'code' | 'chat'
   projectPath: string
   projectRoot: string | null
   workDir: string | null
@@ -72,7 +73,8 @@ export type SessionDetail = SessionListItem & {
 export type SessionLaunchInfo = {
   filePath: string
   projectDir: string
-  workDir: string
+  mode: 'code' | 'chat'
+  workDir: string | null
   repository?: PreparedSessionWorkspace['repository']
   worktreeSession?: PersistedWorktreeSession | null
   transcriptMessageCount: number
@@ -235,6 +237,7 @@ type SessionListSummary = {
   title: string
   createdAt: string
   messageCount: number
+  mode: 'code' | 'chat'
   workDir: string | null
   permissionMode?: string
   runtimeProviderId?: string | null
@@ -252,6 +255,7 @@ const VALID_SESSION_PERMISSION_MODES = new Set([
   'dontAsk',
 ])
 const VALID_SESSION_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'max'])
+export const CHAT_PROJECT_DIR = '__chat__'
 
 type ContentBlock = Record<string, unknown>
 
@@ -310,6 +314,13 @@ export class SessionService {
     return path.join(this.getConfigDir(), 'projects')
   }
 
+  async getChatRuntimeWorkDir(): Promise<string> {
+    const runtimeDir = path.join(this.getConfigDir(), 'chat-runtime')
+    await fs.mkdir(runtimeDir, { recursive: true })
+    registerFilesystemAccessRoot(runtimeDir)
+    return runtimeDir
+  }
+
   /**
    * Sanitize a path the same way the shared session storage does.
    * This must remain Windows-safe, so reserved characters such as ':' are normalized too.
@@ -358,6 +369,7 @@ export class SessionService {
     let goalTitle: string | null = null
     let aiTitle: string | null = null
     let customTitle: string | null = null
+    const mode: 'code' | 'chat' = projectDir === CHAT_PROJECT_DIR ? 'chat' : 'code'
     let latestWorkDir: string | null = null
     let latestCwd: string | null = null
     let permissionMode: string | undefined
@@ -483,7 +495,10 @@ export class SessionService {
         'Untitled Session',
       createdAt,
       messageCount,
-      workDir: latestWorkDir || latestCwd || this.desanitizePath(projectDir),
+      mode,
+      workDir: projectDir === CHAT_PROJECT_DIR
+        ? null
+        : latestWorkDir || latestCwd || this.desanitizePath(projectDir),
       ...(permissionMode ? { permissionMode } : {}),
       ...(runtimeProviderId !== undefined ? { runtimeProviderId } : {}),
       ...(runtimeModelId ? { runtimeModelId } : {}),
@@ -502,6 +517,10 @@ export class SessionService {
     entries: RawEntry[],
     fallbackProjectDir?: string,
   ): string | null {
+    if (fallbackProjectDir === CHAT_PROJECT_DIR) {
+      return null
+    }
+
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i]
       if (entry.type === 'session-meta' && typeof (entry as Record<string, unknown>).workDir === 'string') {
@@ -542,6 +561,18 @@ export class SessionService {
       }
     }
     return undefined
+  }
+
+  private resolveSessionModeFromEntries(entries: RawEntry[]): 'code' | 'chat' {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i]
+      if (entry?.type !== 'session-meta') continue
+      const mode = (entry as Record<string, unknown>).mode
+      if (mode === 'code' || mode === 'chat') {
+        return mode
+      }
+    }
+    return 'code'
   }
 
   private resolveWorktreeSessionFromEntries(entries: RawEntry[]): PersistedWorktreeSession | null | undefined {
@@ -589,6 +620,15 @@ export class SessionService {
     workDir: string | null
     fallbackProjectDir?: string
   }): Promise<string | null> {
+    if (
+      fallbackProjectDir === CHAT_PROJECT_DIR &&
+      !worktreeSession?.originalCwd &&
+      !repository?.repoRoot &&
+      !workDir
+    ) {
+      return null
+    }
+
     const candidate = worktreeSession?.originalCwd ||
       repository?.repoRoot ||
       workDir ||
@@ -1606,7 +1646,7 @@ export class SessionService {
           workDir,
           fallbackProjectDir: projectDir,
         })
-        const workDirExists = await this.pathExists(workDir)
+        const workDirExists = summary.mode === 'chat' ? true : await this.pathExists(workDir)
 
         items.push({
           id: sessionId,
@@ -1614,6 +1654,7 @@ export class SessionService {
           createdAt: summary.createdAt,
           modifiedAt: stat.mtime.toISOString(),
           messageCount: summary.messageCount,
+          mode: summary.mode,
           projectPath: projectDir,
           projectRoot,
           workDir,
@@ -1650,10 +1691,11 @@ export class SessionService {
       this.entriesToMessages(entries),
     )
     const title = this.extractTitle(entries)
-    const workDir = this.resolveWorkDirFromEntries(entries, projectDir)
+    const mode = projectDir === CHAT_PROJECT_DIR ? 'chat' : 'code'
+    const workDir = mode === 'chat' ? null : this.resolveWorkDirFromEntries(entries, projectDir)
     const permissionMode = this.resolvePermissionModeFromEntries(entries)
     const projectRoot = await this.resolveProjectRootFromEntries(entries, workDir, projectDir)
-    const workDirExists = await this.pathExists(workDir)
+    const workDirExists = mode === 'chat' ? true : await this.pathExists(workDir)
 
     let createdAt = stat.birthtime.toISOString()
     for (const e of entries) {
@@ -1669,6 +1711,7 @@ export class SessionService {
       createdAt,
       modifiedAt: stat.mtime.toISOString(),
       messageCount: messages.length,
+      mode,
       projectPath: projectDir,
       projectRoot,
       workDir,
@@ -1702,10 +1745,45 @@ export class SessionService {
     workDir?: string,
     repositoryOptions?: CreateSessionRepositoryOptions,
     permissionMode?: string,
-  ): Promise<{ sessionId: string; workDir: string }> {
+    mode: 'code' | 'chat' = 'code',
+  ): Promise<{ sessionId: string; workDir: string | null }> {
+    const sessionId = crypto.randomUUID()
+    const now = new Date().toISOString()
+
+    const initialEntry = {
+      type: 'file-history-snapshot',
+      messageId: crypto.randomUUID(),
+      snapshot: {
+        messageId: crypto.randomUUID(),
+        trackedFileBackups: {},
+        timestamp: now,
+      },
+      isSnapshotUpdate: false,
+    }
+
+    if (mode === 'chat') {
+      const dirPath = path.join(this.getProjectsDir(), CHAT_PROJECT_DIR)
+      await fs.mkdir(dirPath, { recursive: true })
+
+      const metaEntry = {
+        type: 'session-meta',
+        isMeta: true,
+        mode: 'chat',
+        workDir: null,
+        ...(permissionMode && VALID_SESSION_PERMISSION_MODES.has(permissionMode)
+          ? { permissionMode }
+          : {}),
+        timestamp: now,
+      }
+
+      const filePath = path.join(dirPath, `${sessionId}.jsonl`)
+      await fs.writeFile(filePath, `${JSON.stringify(initialEntry)}\n${JSON.stringify(metaEntry)}\n`, 'utf-8')
+      this.invalidateSessionListCache()
+      return { sessionId, workDir: null }
+    }
+
     // Default to user home directory when no workDir specified
     const resolvedWorkDir = workDir || os.homedir()
-    const sessionId = crypto.randomUUID()
 
     // Resolve to absolute path. NOTE: path.resolve() uses process.cwd() to
     // expand relative paths — in bundled sidecar mode the server's cwd is
@@ -1733,24 +1811,12 @@ export class SessionService {
     await fs.mkdir(dirPath, { recursive: true })
 
     const filePath = path.join(dirPath, `${sessionId}.jsonl`)
-    const now = new Date().toISOString()
-
-    // Write an initial file-history-snapshot entry (matches CLI behavior)
-    const initialEntry = {
-      type: 'file-history-snapshot',
-      messageId: crypto.randomUUID(),
-      snapshot: {
-        messageId: crypto.randomUUID(),
-        trackedFileBackups: {},
-        timestamp: now,
-      },
-      isSnapshotUpdate: false,
-    }
 
     // Store actual workDir for later retrieval
     const metaEntry = {
       type: 'session-meta',
       isMeta: true,
+      mode,
       workDir: absWorkDir,
       repository: preparedWorkspace.repository,
       ...(permissionMode && VALID_SESSION_PERMISSION_MODES.has(permissionMode)
@@ -1896,9 +1962,12 @@ export class SessionService {
     if (!found) return null
 
     const entries = await this.readJsonlFile(found.filePath)
-    const workDir = this.resolveWorkDirFromEntries(entries, found.projectDir) || process.cwd()
-    const repository = this.resolveRepositoryFromEntries(entries)
-    const worktreeSession = this.resolveWorktreeSessionFromEntries(entries)
+    const mode = found.projectDir === CHAT_PROJECT_DIR ? 'chat' : 'code'
+    const workDir = mode === 'chat'
+      ? null
+      : this.resolveWorkDirFromEntries(entries, found.projectDir) || process.cwd()
+    const repository = mode === 'chat' ? undefined : this.resolveRepositoryFromEntries(entries)
+    const worktreeSession = mode === 'chat' ? undefined : this.resolveWorktreeSessionFromEntries(entries)
     const permissionMode = this.resolvePermissionModeFromEntries(entries)
     let customTitle: string | null = null
     let runtimeProviderId: string | null | undefined
@@ -1930,6 +1999,7 @@ export class SessionService {
     return {
       filePath: found.filePath,
       projectDir: found.projectDir,
+      mode,
       workDir,
       repository,
       worktreeSession,
@@ -1966,8 +2036,11 @@ export class SessionService {
     }
 
     const entries = await this.readJsonlFile(found.filePath)
-    const workDir = this.resolveWorkDirFromEntries(entries, found.projectDir) || fallbackWorkDir || process.cwd()
-    const repository = this.resolveRepositoryFromEntries(entries)
+    const mode = found.projectDir === CHAT_PROJECT_DIR ? 'chat' : 'code'
+    const workDir = mode === 'chat'
+      ? null
+      : this.resolveWorkDirFromEntries(entries, found.projectDir) || fallbackWorkDir || process.cwd()
+    const repository = mode === 'chat' ? undefined : this.resolveRepositoryFromEntries(entries)
     const now = new Date().toISOString()
 
     const initialEntry = {
@@ -1984,6 +2057,7 @@ export class SessionService {
     const metaEntry = {
       type: 'session-meta',
       isMeta: true,
+      mode,
       workDir,
       repository,
       timestamp: now,
@@ -2000,7 +2074,8 @@ export class SessionService {
   async appendSessionMetadata(
     sessionId: string,
     metadata: {
-      workDir: string
+      workDir: string | null
+      mode?: 'code' | 'chat'
       customTitle?: string | null
       repository?: PreparedSessionWorkspace['repository']
       permissionMode?: string
@@ -2011,6 +2086,40 @@ export class SessionService {
   ): Promise<void> {
     const matches = await this.findSessionFiles(sessionId)
     if (matches.length === 0) return
+
+    const isChatMetadata = metadata.mode === 'chat'
+    if (isChatMetadata) {
+      const chatMatch = matches.find((match) => match.projectDir === CHAT_PROJECT_DIR) ?? matches[0]
+      if (!chatMatch) return
+
+      await this.appendJsonlEntry(chatMatch.filePath, {
+        type: 'session-meta',
+        isMeta: true,
+        mode: 'chat',
+        workDir: null,
+        ...(metadata.permissionMode && VALID_SESSION_PERMISSION_MODES.has(metadata.permissionMode)
+          ? { permissionMode: metadata.permissionMode }
+          : {}),
+        ...(metadata.runtimeProviderId !== undefined
+          ? { runtimeProviderId: metadata.runtimeProviderId }
+          : {}),
+        ...(metadata.runtimeModelId ? { runtimeModelId: metadata.runtimeModelId } : {}),
+        ...(metadata.effortLevel && VALID_SESSION_EFFORT_LEVELS.has(metadata.effortLevel)
+          ? { effortLevel: metadata.effortLevel }
+          : {}),
+        timestamp: new Date().toISOString(),
+      })
+
+      if (metadata.customTitle) {
+        await this.appendJsonlEntry(chatMatch.filePath, {
+          type: 'custom-title',
+          customTitle: metadata.customTitle,
+          timestamp: new Date().toISOString(),
+        })
+      }
+      this.invalidateSessionListCache()
+      return
+    }
 
     let repository = metadata.repository
     if (!repository) {
@@ -2023,6 +2132,7 @@ export class SessionService {
       }
     }
 
+    if (!metadata.workDir) return
     const normalizedWorkDir = normalizeDriveRootPathForPlatform(metadata.workDir)
     const targetProjectDir = this.sanitizePath(normalizedWorkDir)
     const targetFilePath = path.join(this.getProjectsDir(), targetProjectDir, `${sessionId}.jsonl`)
@@ -2031,6 +2141,7 @@ export class SessionService {
     await this.appendJsonlEntry(targetFilePath, {
       type: 'session-meta',
       isMeta: true,
+      mode: metadata.mode ?? 'code',
       workDir: normalizedWorkDir,
       repository,
       ...(metadata.permissionMode && VALID_SESSION_PERMISSION_MODES.has(metadata.permissionMode)

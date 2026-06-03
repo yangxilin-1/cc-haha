@@ -7,12 +7,16 @@ export type ClaudeCliLauncher = {
   requiresAppRoot: boolean
 }
 
+function isDesktopSidecarName(name: string): boolean {
+  return name.startsWith('claude-sidecar') || name.startsWith('ycode-sidecar')
+}
+
 export function resolveBundledCliPathFromExecPath(
   execPath: string = process.execPath,
 ): string | null {
   const execName = path.basename(execPath)
 
-  if (execName.startsWith('claude-sidecar')) {
+  if (isDesktopSidecarName(execName)) {
     return execPath
   }
 
@@ -47,7 +51,7 @@ export function resolveClaudeCliLauncher(options?: {
   }
 
   const cliBaseName = path.basename(command)
-  if (cliBaseName.startsWith('claude-sidecar')) {
+  if (isDesktopSidecarName(cliBaseName)) {
     return {
       command,
       kind: 'sidecar',

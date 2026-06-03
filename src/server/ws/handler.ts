@@ -668,6 +668,16 @@ async function persistSessionPermissionMode(
   mode: string,
   knownWorkDir?: string | null,
 ): Promise<void> {
+  const launchInfo = await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
+  if (launchInfo?.mode === 'chat') {
+    await sessionService.appendSessionMetadata(sessionId, {
+      mode: 'chat',
+      workDir: null,
+      permissionMode: mode,
+    })
+    return
+  }
+
   const workDir =
     knownWorkDir ||
     conversationService.getSessionWorkDir(sessionId) ||
@@ -685,6 +695,18 @@ async function persistSessionRuntimeConfig(
   sessionId: string,
   runtime: { providerId: string | null; modelId: string; effort?: string },
 ): Promise<void> {
+  const launchInfo = await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
+  if (launchInfo?.mode === 'chat') {
+    await sessionService.appendSessionMetadata(sessionId, {
+      mode: 'chat',
+      workDir: null,
+      runtimeProviderId: runtime.providerId,
+      runtimeModelId: runtime.modelId,
+      ...(runtime.effort ? { effortLevel: runtime.effort } : {}),
+    })
+    return
+  }
+
   const workDir =
     conversationService.getSessionWorkDir(sessionId) ||
     await sessionService.getSessionWorkDir(sessionId).catch(() => null)
@@ -931,11 +953,17 @@ function markPrewarmed(sessionId: string) {
   prewarmIdleTimers.set(sessionId, timer)
 }
 
+async function isChatSession(sessionId: string): Promise<boolean> {
+  const launchInfo = await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
+  return launchInfo?.mode === 'chat'
+}
+
 function cacheSessionInitMetadata(sessionId: string, cliMsg: any) {
   if (cliMsg?.type !== 'system' || cliMsg.subtype !== 'init') return
   if (typeof cliMsg.cwd === 'string' && cliMsg.cwd.trim()) {
     conversationService.updateSessionWorkDir(sessionId, cliMsg.cwd)
     void (async () => {
+      if (await isChatSession(sessionId)) return
       await sessionService.appendSessionMetadata(sessionId, {
         workDir: cliMsg.cwd,
       })
@@ -1000,8 +1028,17 @@ function bindPrewarmMetadataCapture(sessionId: string) {
 }
 
 async function resolveSessionWorkDir(sessionId: string, fallback = os.homedir()): Promise<string> {
-  let workDir = fallback
   try {
+    const launchInfo = await sessionService.getSessionLaunchInfo(sessionId).catch(() => null)
+    if (launchInfo?.mode === 'chat') {
+      const runtimeWorkDir = await sessionService.getChatRuntimeWorkDir()
+      console.log(
+        `[WS] resolveSessionWorkDir: sessionId=${sessionId} is chat, spawning CLI with internal runtime cwd=${runtimeWorkDir}`,
+      )
+      return runtimeWorkDir
+    }
+
+    let workDir = fallback
     const resolved = await sessionService.getSessionWorkDir(sessionId)
     if (resolved) workDir = resolved
     console.log(
@@ -1009,14 +1046,15 @@ async function resolveSessionWorkDir(sessionId: string, fallback = os.homedir())
         resolved,
       )}, will spawn CLI with workDir=${workDir}`,
     )
+    return workDir
   } catch (resolveErr) {
     console.warn(
-      `[WS] resolveSessionWorkDir: failed to resolve workDir for ${sessionId}, using fallback=${workDir}: ${
+      `[WS] resolveSessionWorkDir: failed to resolve workDir for ${sessionId}, using fallback=${fallback}: ${
         resolveErr instanceof Error ? resolveErr.message : String(resolveErr)
       }`,
     )
   }
-  return workDir
+  return fallback
 }
 
 async function ensureCliSessionStarted(

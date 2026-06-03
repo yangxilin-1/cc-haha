@@ -1,5 +1,5 @@
 {
-  "name": "claude-code-local",
+  "name": "ycode-local",
   "version": "999.0.0-local",
   "private": true,
   "type": "module",

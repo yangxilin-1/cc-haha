@@ -85,7 +85,7 @@ export type PreparedSessionWorkspace = {
 }
 
 export type RepositorySessionLaunchState = {
-  workDir: string
+  workDir: string | null
   repository?: PreparedSessionWorkspace['repository']
   worktreeSession?: { worktreePath?: string | null } | null
   transcriptMessageCount: number

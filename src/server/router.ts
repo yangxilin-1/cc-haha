@@ -78,6 +78,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       return handleProvidersApi(req, url, segments)
 
     case 'haha-oauth':
+    case 'ycode-oauth':
       return handleHahaOAuthApi(req, url, segments)
 
     case 'haha-openai-oauth':

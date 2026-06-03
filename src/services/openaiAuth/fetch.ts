@@ -14,6 +14,10 @@ import { logForDebugging } from '../../utils/debug.js'
 export const OPENAI_OAUTH_DUMMY_KEY = 'openai-oauth-dummy-key'
 
 export function shouldUseOpenAICodexAuth(): boolean {
+  if (process.env.OPENAI_API_KEY?.trim()) {
+    return true
+  }
+
   const openaiTokens = getOpenAIOAuthTokens()
   return !!openaiTokens?.refreshToken
 }
@@ -42,17 +46,19 @@ export function buildOpenAICodexFetch(
       stream: true,
     }
 
-    const tokens = await ensureFreshOpenAITokens()
-    if (!tokens) {
+    const openAIApiKey = process.env.OPENAI_API_KEY?.trim()
+    const tokens = openAIApiKey ? null : await ensureFreshOpenAITokens()
+    const accessToken = openAIApiKey || tokens?.accessToken
+    if (!accessToken) {
       throw new Error(
-        'OpenAI OAuth token is missing or expired. Run claude auth login --openai again.',
+        'OpenAI auth is missing or expired. Configure ~/.codex/auth.json or sign in again.',
       )
     }
 
     const headers = new Headers()
     headers.set('Content-Type', 'application/json')
-    headers.set('Authorization', `Bearer ${tokens.accessToken}`)
-    if (tokens.accountId) {
+    headers.set('Authorization', `Bearer ${accessToken}`)
+    if (tokens?.accountId) {
       headers.set('ChatGPT-Account-Id', tokens.accountId)
     }
 

@@ -7,6 +7,7 @@ import {
   getOpenAICodexContextWindowForModel,
 } from '../../services/openaiAuth/models.js'
 import { MODEL_CONTEXT_WINDOWS_ENV_KEY } from '../../utils/model/modelContextWindows.js'
+import { readOfficialCodexRuntimeEnvSync } from './officialCodexAuthService.js'
 import { getHahaOpenAIOAuthFilePath } from './hahaOpenAIOAuthService.js'
 import type { SavedProvider } from '../types/provider.js'
 
@@ -51,11 +52,20 @@ export const OPENAI_OFFICIAL_PROVIDER: SavedProvider = {
   modelContextWindows,
 }
 
-export function buildOpenAIOfficialRuntimeEnv(): Record<string, string> {
+export function buildOpenAIOfficialRuntimeEnv(options?: {
+  includeOfficialAuth?: boolean
+  includeDesktopOAuthFallback?: boolean
+}): Record<string, string> {
   const modelContextWindows = OPENAI_OFFICIAL_PROVIDER.modelContextWindows ?? {}
+  const officialAuthEnv = options?.includeOfficialAuth === false
+    ? {}
+    : readOfficialCodexRuntimeEnvSync()
   return {
     [OPENAI_OAUTH_PROVIDER_ENV_KEY]: '1',
-    [OPENAI_CODEX_OAUTH_FILE_ENV_KEY]: getHahaOpenAIOAuthFilePath(),
+    ...(options?.includeDesktopOAuthFallback === false
+      ? {}
+      : { [OPENAI_CODEX_OAUTH_FILE_ENV_KEY]: getHahaOpenAIOAuthFilePath() }),
+    ...officialAuthEnv,
     ...(Object.keys(modelContextWindows).length > 0 && {
       [MODEL_CONTEXT_WINDOWS_ENV_KEY]: JSON.stringify(modelContextWindows),
     }),
