@@ -31,8 +31,8 @@ await mkdir(binariesDir, { recursive: true })
 // 选择 'server' 或 'cli' 模式，详见 desktop/sidecars/claude-sidecar.ts。
 await compileExecutable({
   entrypoint: path.join(desktopRoot, 'sidecars/claude-sidecar.ts'),
-  outfileBase: path.join(binariesDir, `claude-sidecar-${targetTriple}`),
-  productName: 'Claude Code Sidecar',
+  outfileBase: path.join(binariesDir, `ycode-sidecar-${targetTriple}`),
+  productName: 'Ycode Sidecar',
   bunTarget,
 })
 
@@ -72,7 +72,7 @@ function mapTargetTripleToBun(triple: string) {
     case 'x86_64-apple-darwin':
       return 'bun-darwin-x64'
     case 'x86_64-pc-windows-msvc':
-      // Prefer baseline on Windows x64 so older CPUs do not crash before the
+        // Prefer baseline on Windows x64 so older CPUs do not crash before the
       // desktop app can even start the local sidecar process.
       return 'bun-windows-x64-baseline'
     case 'aarch64-pc-windows-msvc':
@@ -90,6 +90,13 @@ function mapTargetTripleToBun(triple: string) {
   }
 }
 
+function getCompileExecutablePath(target: string): string | undefined {
+  if (process.platform !== 'win32') return undefined
+  if (target !== 'bun-windows-x64-baseline') return undefined
+
+  return process.execPath
+}
+
 async function compileExecutable({
   entrypoint,
   outfileBase,
@@ -101,6 +108,11 @@ async function compileExecutable({
   productName: string
   bunTarget: string
 }) {
+  const executablePath = getCompileExecutablePath(bunTarget)
+  if (executablePath) {
+    console.log(`[build-sidecars] Using local Bun executable for ${bunTarget}: ${executablePath}`)
+  }
+
   const result = await Bun.build({
     entrypoints: [entrypoint],
     // minify whitespace + identifiers + dead-code 大概能省 5-15% 的二进制大小，
@@ -140,6 +152,7 @@ async function compileExecutable({
     compile: {
       target: bunTarget,
       outfile: outfileBase,
+      ...(executablePath ? { executablePath } : {}),
       autoloadTsconfig: true,
       autoloadPackageJson: true,
       windows: {

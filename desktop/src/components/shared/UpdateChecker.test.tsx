@@ -17,7 +17,7 @@ describe('UpdateChecker', () => {
     useUpdateStore.setState({
       status: 'available',
       availableVersion: '0.1.5',
-      releaseNotes: '# Claude Code Haha v0.1.5\n\n[Release notes](https://example.com/releases/v0.1.5)',
+      releaseNotes: '# Ycode v0.1.5\n\n[Release notes](https://example.com/releases/v0.1.5)',
       progressPercent: 0,
       downloadedBytes: 0,
       totalBytes: null,
@@ -38,7 +38,7 @@ describe('UpdateChecker', () => {
 
     expect(screen.getByText('Update ready')).toBeInTheDocument()
     expect(screen.getByText('v0.1.5 has been downloaded. Restart when you are ready to use it.')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Claude Code Haha v0.1.5' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Ycode v0.1.5' })).toBeInTheDocument()
 
     const link = screen.getByRole('link', { name: 'Release notes' })
     expect(link).toHaveAttribute('href', 'https://example.com/releases/v0.1.5')
@@ -49,7 +49,7 @@ describe('UpdateChecker', () => {
     useUpdateStore.setState({
       status: 'downloading',
       availableVersion: '0.1.5',
-      releaseNotes: '# Claude Code Haha v0.1.5',
+      releaseNotes: '# Ycode v0.1.5',
       progressPercent: 0,
       downloadedBytes: 1536,
       totalBytes: null,

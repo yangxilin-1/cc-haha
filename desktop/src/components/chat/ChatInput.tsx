@@ -856,10 +856,10 @@ export function ChatInput({ variant = 'default', compact = false }: ChatInputPro
       data-testid="chat-input-shell"
       className={
         isHeroComposer
-          ? `bg-[var(--color-surface)] ${isMobileComposer ? 'px-4 pb-3' : 'px-8 pb-4'}`
+          ? `bg-[var(--color-background)] ${isMobileComposer ? 'px-4 pb-3' : 'px-8 pb-4'}`
           : compact
-            ? `border-t border-[var(--color-border)]/70 bg-[var(--color-surface)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-3 py-3'}`
-            : `bg-[var(--color-surface)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-4 py-4'}`
+            ? `border-t border-[var(--color-border)]/70 bg-[var(--color-background)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-3 py-3'}`
+            : `bg-[var(--color-background)] ${isMobileComposer ? 'px-3 pb-[calc(env(safe-area-inset-bottom)+10px)] pt-2' : 'px-4 py-4'}`
       }
     >
       <div

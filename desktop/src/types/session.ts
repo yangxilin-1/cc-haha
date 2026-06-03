@@ -6,6 +6,7 @@ export type SessionListItem = {
   createdAt: string
   modifiedAt: string
   messageCount: number
+  mode?: 'code' | 'chat'
   projectPath: string
   projectRoot?: string | null
   workDir: string | null

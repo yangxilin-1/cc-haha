@@ -5,8 +5,8 @@ import { desktopUiPreferencesApi, getProfileAvatarUrl } from './desktopUiPrefere
 const preferences = {
   schemaVersion: 2,
   profile: {
-    displayName: 'cc-haha',
-    subtitle: 'github.com/NanmiCoder/cc-haha',
+    displayName: 'Ycode',
+    subtitle: 'github.com/NanmiCoder/Ycode',
     avatarFile: null,
     avatarUpdatedAt: null,
   },

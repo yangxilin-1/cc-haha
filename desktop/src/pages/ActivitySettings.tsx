@@ -52,8 +52,8 @@ const DATE_LOCALES: Record<Locale, string> = {
   zh: 'zh-CN',
 }
 const DEFAULT_PROFILE: DesktopProfilePreferences = {
-  displayName: 'cc-haha',
-  subtitle: 'github.com/NanmiCoder/cc-haha',
+  displayName: 'Ycode',
+  subtitle: 'Ycode',
   avatarFile: null,
   avatarUpdatedAt: null,
 }

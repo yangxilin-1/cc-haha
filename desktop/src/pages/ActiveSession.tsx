@@ -25,6 +25,7 @@ import { ComputerUsePermissionModal } from '../components/chat/ComputerUsePermis
 import { SessionTaskBar } from '../components/chat/SessionTaskBar'
 import { WorkbenchPanel } from '../components/workbench/WorkbenchPanel'
 import { TeamStatusBar } from '../components/teams/TeamStatusBar'
+import { EmptySession } from './EmptySession'
 import { TerminalSettings } from './TerminalSettings'
 import type { SessionListItem } from '../types/session'
 import type { ActiveGoalState } from '../types/chat'
@@ -35,7 +36,7 @@ const TASK_POLL_INTERVAL_MS = 1000
 const WORKSPACE_RESIZE_STEP = 32
 const TERMINAL_RESIZE_STEP = 24
 const CHAT_COLUMN_WITH_WORKSPACE_CLASS =
-  'min-w-[320px] flex-1 border-r border-[var(--color-border)] bg-[var(--color-surface)]'
+  'min-w-[320px] flex-1 border-r border-[var(--color-border)] bg-background'
 
 function isSessionTabState(activeTabId: string | null, activeTabType: TabType | null | undefined) {
   if (!activeTabId) return false
@@ -48,6 +49,7 @@ function isSessionTabState(activeTabId: string | null, activeTabType: TabType | 
 
 function getSessionTerminalCwd(session: SessionListItem | undefined) {
   if (!session) return undefined
+  if (session.mode === 'chat') return undefined
   if (session.workDir && session.workDirExists !== false) return session.workDir
   return session.projectPath || undefined
 }
@@ -273,23 +275,24 @@ export function ActiveSession() {
     .some((task) => task.status === 'running')
 
   const session = sessions.find((s) => s.id === activeTabId)
+  const isCodeSession = (session?.mode ?? 'code') === 'code'
   const memberInfo = useTeamStore((s) => activeTabId ? s.getMemberBySessionId(activeTabId) : null)
   const activeTeam = useTeamStore((s) => s.activeTeam)
   const isMemberSession = !!memberInfo
   const showWorkbench = useWorkspacePanelStore((state) =>
-    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+    activeTabId && isCodeSession && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
       ? state.isPanelOpen(activeTabId)
       : false,
   )
   const showRightPanel = showWorkbench
   const rightPanelWidth = useWorkspacePanelStore((state) => state.width)
   const showTerminalPanel = useTerminalPanelStore((state) =>
-    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+    activeTabId && isCodeSession && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
       ? state.isPanelOpen(activeTabId)
       : false,
   )
   const terminalPanelRuntimeId = useTerminalPanelStore((state) =>
-    activeTabId && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
+    activeTabId && isCodeSession && isSessionTabState(activeTabId, activeTabType) && !isMemberSession && !isMobileLayout
       ? state.panelBySession[activeTabId]?.runtimeId
       : undefined,
   )
@@ -361,6 +364,10 @@ export function ActiveSession() {
 
   if (!activeTabId) return null
 
+  if (isEmpty && !isMemberSession) {
+    return <EmptySession />
+  }
+
   return (
     <div className="flex-1 flex relative overflow-hidden bg-background text-on-surface">
       <div data-testid="active-session-content-row" className="flex min-h-0 min-w-0 flex-1">
@@ -416,26 +423,12 @@ export function ActiveSession() {
           {isEmpty ? (
             <div className="flex flex-1 flex-col items-center justify-center p-8 pb-32">
               <div className="flex max-w-md flex-col items-center text-center">
-                {isMemberSession ? (
-                  <>
-                    <span className="material-symbols-outlined text-[48px] mb-4 text-[var(--color-text-tertiary)]">smart_toy</span>
-                    <p className="text-[var(--color-text-secondary)]">
-                      {memberInfo?.status === 'running'
-                        ? `${memberInfo.role} ${t('teams.working')}`
-                        : t('teams.noMessages')}
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <img src="/app-icon.png" alt="Claude Code Haha" className="mb-6 h-24 w-24" />
-                    <h1 className="mb-2 text-3xl font-extrabold tracking-tight text-[var(--color-text-primary)]" style={{ fontFamily: 'var(--font-headline)' }}>
-                      {t('empty.title')}
-                    </h1>
-                    <p className="mx-auto max-w-xs text-[var(--color-text-secondary)]" style={{ fontFamily: 'var(--font-body)' }}>
-                      {t('empty.subtitle')}
-                    </p>
-                  </>
-                )}
+                <span className="material-symbols-outlined text-[48px] mb-4 text-[var(--color-text-tertiary)]">smart_toy</span>
+                <p className="text-[var(--color-text-secondary)]">
+                  {memberInfo?.status === 'running'
+                    ? `${memberInfo.role} ${t('teams.working')}`
+                    : t('teams.noMessages')}
+                </p>
               </div>
             </div>
           ) : (
@@ -490,7 +483,7 @@ export function ActiveSession() {
                         </>
                       )}
                     </div>
-                    {session?.workDirExists === false && (
+                    {isCodeSession && session?.workDirExists === false && (
                       <div className="mt-2 inline-flex max-w-full items-center gap-2 rounded-lg border border-[var(--color-error)]/20 bg-[var(--color-error)]/8 px-3 py-1.5 text-[11px] text-[var(--color-error)]">
                         <span className="material-symbols-outlined text-[14px]">warning</span>
                         <span className="truncate">

@@ -316,8 +316,9 @@ describe('EmptySession', () => {
     render(<EmptySession />)
 
     const panel = screen.getByTestId('empty-session-composer-panel')
-    expect(panel).toHaveClass('rounded-xl', 'p-0')
+    expect(panel).toHaveClass('empty-session-composer-panel', 'p-0')
     expect(panel).not.toHaveClass('rounded-b-none')
+    expect(panel).toContainElement(screen.getByRole('button', { name: 'Pick project' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Pick project' }))
 
@@ -352,6 +353,7 @@ describe('EmptySession', () => {
 
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith({
+        mode: 'code',
         workDir: '/workspace/project',
         repository: { branch: 'main', worktree: false },
         permissionMode: 'default',
@@ -395,7 +397,7 @@ describe('EmptySession', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run/i }))
 
     await waitFor(() => {
-      expect(mocks.createSession).toHaveBeenCalledWith({ permissionMode: 'default' })
+      expect(mocks.createSession).toHaveBeenCalledWith({ mode: 'code', permissionMode: 'default' })
     })
 
     expect(useSessionRuntimeStore.getState().selections['draft-session']).toEqual({
@@ -437,7 +439,7 @@ describe('EmptySession', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run/i }))
 
     await waitFor(() => {
-      expect(mocks.createSession).toHaveBeenCalledWith({ permissionMode: 'default' })
+      expect(mocks.createSession).toHaveBeenCalledWith({ mode: 'code', permissionMode: 'default' })
     })
     expect(mocks.wsSend).toHaveBeenCalledWith('draft-session', {
       type: 'user_message',
@@ -489,7 +491,7 @@ describe('EmptySession', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run/i }))
 
     await waitFor(() => {
-      expect(mocks.createSession).toHaveBeenCalledWith({ permissionMode: 'default' })
+      expect(mocks.createSession).toHaveBeenCalledWith({ mode: 'code', permissionMode: 'default' })
     })
     expect(mocks.wsSend).toHaveBeenCalledWith('draft-session', {
       type: 'user_message',
@@ -530,6 +532,11 @@ describe('EmptySession', () => {
     expect(panel).toHaveClass('overflow-visible')
     expect(panel).not.toHaveClass('overflow-hidden')
 
+    fireEvent.click(screen.getByRole('button', { name: 'Pick project' }))
+    await waitFor(() => {
+      expect(screen.getByText('main')).toBeInTheDocument()
+    })
+
     fireEvent.change(input, {
       target: {
         value: '@readme',
@@ -563,6 +570,7 @@ describe('EmptySession', () => {
 
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith({
+        mode: 'code',
         workDir: '/workspace/project',
         permissionMode: 'default',
       })
@@ -668,6 +676,7 @@ describe('EmptySession', () => {
 
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith({
+        mode: 'code',
         workDir: '/workspace/project',
         repository: { branch: 'main', worktree: false },
         permissionMode: 'default',
@@ -760,6 +769,7 @@ describe('EmptySession', () => {
 
     await waitFor(() => {
       expect(mocks.createSession).toHaveBeenCalledWith({
+        mode: 'code',
         workDir: '/workspace/project',
         repository: { branch: 'main', worktree: false },
         permissionMode: 'default',

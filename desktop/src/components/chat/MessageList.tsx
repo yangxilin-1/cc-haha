@@ -800,20 +800,7 @@ const VIRTUAL_MAX_ITEM_HEIGHT = 24_000
 const CONTENT_RESIZE_FOLLOW_MIN_DELTA_PX = 2
 const EMPTY_MESSAGES: UIMessage[] = []
 const EMPTY_AGENT_TASK_NOTIFICATIONS: Record<string, AgentTaskNotification> = {}
-const CHAT_SCROLL_AREA_CLASS = [
-  'chat-scroll-area',
-  '[scrollbar-width:auto]',
-  '[scrollbar-color:color-mix(in_srgb,var(--color-outline)_72%,transparent)_transparent]',
-  '[&::-webkit-scrollbar]:w-2.5',
-  '[&::-webkit-scrollbar-track]:bg-transparent',
-  '[&::-webkit-scrollbar-thumb]:rounded-full',
-  '[&::-webkit-scrollbar-thumb]:border-[3px]',
-  '[&::-webkit-scrollbar-thumb]:border-transparent',
-  '[&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--color-outline)_74%,transparent)]',
-  '[&::-webkit-scrollbar-thumb]:bg-clip-content',
-  '[&::-webkit-scrollbar-thumb:hover]:border-2',
-  '[&::-webkit-scrollbar-thumb:hover]:bg-[color-mix(in_srgb,var(--color-outline)_90%,transparent)]',
-].join(' ')
+const CHAT_SCROLL_AREA_CLASS = 'chat-scroll-area'
 const CHAT_RENDER_ITEM_CLASS = [
   'chat-render-item',
 ].join(' ')

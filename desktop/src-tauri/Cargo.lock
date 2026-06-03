@@ -481,27 +481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "claude-code-desktop"
-version = "0.3.2"
-dependencies = [
- "anyhow",
- "portable-pty",
- "reqwest",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tauri-runtime",
- "tauri-runtime-wry",
-]
-
-[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6033,6 +6012,27 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "ycode-desktop"
+version = "0.3.2"
+dependencies = [
+ "anyhow",
+ "portable-pty",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tauri-runtime",
+ "tauri-runtime-wry",
 ]
 
 [[package]]

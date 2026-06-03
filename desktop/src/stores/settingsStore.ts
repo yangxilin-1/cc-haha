@@ -21,7 +21,6 @@ import {
   type UpdateProxySettings,
   type WebSearchSettings,
 } from '../types/settings'
-import { isTauriRuntime } from '../lib/desktopRuntime'
 import type { Locale } from '../i18n'
 import {
   APP_ZOOM_CONTROL_STEP,
@@ -440,38 +439,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   fetchAppMode: async () => {
-    if (!isTauriRuntime()) return
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const result: AppModeConfig = await invoke('get_app_mode')
-      set({ appMode: result })
-    } catch { /* silently ignore - not in Tauri or command unavailable */ }
+    return
   },
 
   setAppMode: async (mode, portableDir) => {
-    if (!isTauriRuntime()) return
-    const prev = get().appMode
-    const newMode: AppModeConfig = {
-      ...prev,
-      mode,
-      portableDir: mode === 'portable'
-        ? portableDir ?? prev.defaultPortableDir ?? prev.portableDir
-        : null,
-      activeConfigDir: mode === 'portable'
-        ? portableDir ?? prev.defaultPortableDir ?? prev.portableDir
-        : null,
-      configDirSource: mode === 'portable' ? 'portable' : 'system',
-    }
-    set({ appMode: newMode, appModeRequiresRestart: true })
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('set_app_mode', {
-        mode,
-        portableDir: newMode.portableDir || null,
-      })
-    } catch {
-      set({ appMode: prev, appModeRequiresRestart: false })
-    }
+    void mode
+    void portableDir
   },
 }))
 

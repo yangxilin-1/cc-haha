@@ -8,7 +8,7 @@ import { useUIStore } from '../stores/uiStore'
 import { useUpdateStore } from '../stores/updateStore'
 import type { SavedProvider } from '../types/provider'
 import type { ProviderPreset } from '../types/providerPreset'
-import type { AppMode, ChatSendBehavior, ThemeMode, UpdateProxySettings } from '../types/settings'
+import type { ChatSendBehavior, ThemeMode, UpdateProxySettings } from '../types/settings'
 
 const MOCK_DELETE_PROVIDER = vi.fn()
 const MOCK_GET_SETTINGS = vi.fn()
@@ -21,15 +21,6 @@ const desktopNotificationsMock = vi.hoisted(() => ({
 }))
 const clipboardMock = vi.hoisted(() => ({
   copyTextToClipboard: vi.fn(),
-}))
-const tauriCoreMock = vi.hoisted(() => ({
-  invoke: vi.fn(),
-}))
-const tauriDialogMock = vi.hoisted(() => ({
-  open: vi.fn(),
-}))
-const tauriProcessMock = vi.hoisted(() => ({
-  relaunch: vi.fn(),
 }))
 const providerStoreState = {
   providers: [] as SavedProvider[],
@@ -68,9 +59,6 @@ vi.mock('../api/providers', () => ({
 
 vi.mock('../lib/desktopNotifications', () => desktopNotificationsMock)
 vi.mock('../components/chat/clipboard', () => clipboardMock)
-vi.mock('@tauri-apps/api/core', () => tauriCoreMock)
-vi.mock('@tauri-apps/plugin-dialog', () => tauriDialogMock)
-vi.mock('@tauri-apps/plugin-process', () => tauriProcessMock)
 vi.mock('qrcode', () => ({
   default: {
     toDataURL: vi.fn().mockResolvedValue('data:image/png;base64,h5qr'),
@@ -136,12 +124,6 @@ describe('Settings > General tab', () => {
     desktopNotificationsMock.openDesktopNotificationSettings.mockResolvedValue(true)
     clipboardMock.copyTextToClipboard.mockReset()
     clipboardMock.copyTextToClipboard.mockResolvedValue(true)
-    tauriCoreMock.invoke.mockReset()
-    tauriCoreMock.invoke.mockResolvedValue(undefined)
-    tauriDialogMock.open.mockReset()
-    tauriDialogMock.open.mockResolvedValue('/Users/test/cc-haha-data')
-    tauriProcessMock.relaunch.mockReset()
-    tauriProcessMock.relaunch.mockResolvedValue(undefined)
     delete (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__
     MOCK_GET_SETTINGS.mockResolvedValue({})
     MOCK_UPDATE_SETTINGS.mockResolvedValue({})
@@ -208,27 +190,6 @@ describe('Settings > General tab', () => {
       }),
       setNetwork: vi.fn().mockImplementation(async (network) => {
         useSettingsStore.setState({ network })
-      }),
-      appMode: {
-        mode: 'default',
-        portableDir: null,
-        defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
-        activeConfigDir: null,
-        configDirSource: 'system',
-      },
-      appModeRequiresRestart: false,
-      fetchAppMode: vi.fn().mockResolvedValue(undefined),
-      setAppMode: vi.fn().mockImplementation(async (mode: AppMode, portableDir?: string | null) => {
-        useSettingsStore.setState({
-          appMode: {
-            mode,
-            portableDir: mode === 'portable' ? portableDir ?? '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR' : null,
-            defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
-            activeConfigDir: mode === 'portable' ? portableDir ?? '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR' : null,
-            configDirSource: mode === 'portable' ? 'portable' : 'system',
-          },
-          appModeRequiresRestart: true,
-        })
       }),
       enableH5Access: vi.fn().mockImplementation(async () => {
         const current = useSettingsStore.getState().h5Access
@@ -406,174 +367,15 @@ describe('Settings > General tab', () => {
     expect(saveButton).not.toBeDisabled()
   })
 
-  it('keeps data storage at the bottom of General settings', () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-
+  it('does not show data storage switching controls in General settings', () => {
     render(<Settings />)
 
     fireEvent.click(screen.getByText('General'))
 
-    const webSearchHeading = screen.getByRole('heading', { name: 'WebSearch' })
-    const storageHeading = screen.getByRole('heading', { name: 'Data Storage Location' })
-
-    expect((webSearchHeading.compareDocumentPosition(storageHeading) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true)
-    expect(screen.getByText(/Switching directories does not migrate existing data/)).toBeInTheDocument()
-  })
-
-  it('lets desktop users choose a portable data directory and relaunch immediately', async () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    fireEvent.click(screen.getByRole('button', { name: 'Choose Folder' }))
-
-    await waitFor(() => {
-      expect(screen.getByLabelText('Portable data directory')).toHaveValue('/Users/test/cc-haha-data')
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
-    expect(screen.getByText('Switch data storage location?')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
-
-    await waitFor(() => {
-      expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('portable', '/Users/test/cc-haha-data')
-      expect(tauriCoreMock.invoke).toHaveBeenCalledWith('prepare_for_app_mode_restart')
-      expect(tauriProcessMock.relaunch).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  it('switches back to the system directory without deleting portable data', async () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-    useSettingsStore.setState({
-      appMode: {
-        mode: 'portable',
-        portableDir: '/Users/test/cc-haha-data',
-        defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
-        activeConfigDir: '/Users/test/cc-haha-data',
-        configDirSource: 'portable',
-      },
-    })
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    fireEvent.click(screen.getByRole('button', { name: /Use system directory/ }))
-
-    expect(screen.getByText(/Data in the portable directory is not deleted/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
-
-    await waitFor(() => {
-      expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('default', null)
-      expect(tauriCoreMock.invoke).toHaveBeenCalledWith('prepare_for_app_mode_restart')
-      expect(tauriProcessMock.relaunch).toHaveBeenCalledTimes(1)
-    })
-  })
-
-  it('validates portable directory input and lets users reset to the app-side folder', async () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    const input = screen.getByLabelText('Portable data directory')
-
-    fireEvent.change(input, { target: { value: '' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
-    expect(screen.getByText('Choose or enter a portable data directory first.')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Use the default portable folder beside the app' }))
-    expect(input).toHaveValue('/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR')
-    expect(screen.queryByText('Choose or enter a portable data directory first.')).not.toBeInTheDocument()
-  })
-
-  it('shows folder picker failures as an inline storage error', async () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-    tauriDialogMock.open.mockRejectedValueOnce(new Error('dialog unavailable'))
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    fireEvent.click(screen.getByRole('button', { name: 'Choose Folder' }))
-
-    expect(await screen.findByText('Could not open the folder picker. Paste the folder path manually.')).toBeInTheDocument()
-  })
-
-  it('treats external CLAUDE_CONFIG_DIR as the controlling data source', async () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-    useSettingsStore.setState({
-      appMode: {
-        mode: 'portable',
-        portableDir: '/env/claude-data',
-        defaultPortableDir: '/Applications/Claude Code Haha/CLAUDE_CONFIG_DIR',
-        activeConfigDir: '/env/claude-data',
-        configDirSource: 'environment',
-      },
-    })
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    expect(screen.getByText(/The current directory is controlled by the CLAUDE_CONFIG_DIR environment variable/)).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /Use system directory/ }))
-    expect(screen.getByText(/Remove it from the launch environment before switching back/)).toBeInTheDocument()
-
-    fireEvent.change(screen.getByLabelText('Portable data directory'), { target: { value: '/other/data' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
+    expect(screen.queryByRole('heading', { name: 'Data Storage Location' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Portable data directory')).not.toBeInTheDocument()
+    expect(screen.queryByText('Use This Folder and Restart')).not.toBeInTheDocument()
     expect(screen.queryByText('Switch data storage location?')).not.toBeInTheDocument()
-    expect(screen.getByText(/Remove it from the launch environment before switching back/)).toBeInTheDocument()
-  })
-
-  it('keeps mode switch confirmation cancelable before restart starts', async () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
-    expect(screen.getByText('Switch data storage location?')).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
-
-    await waitFor(() => {
-      expect(screen.queryByText('Switch data storage location?')).not.toBeInTheDocument()
-    })
-    expect(useSettingsStore.getState().setAppMode).not.toHaveBeenCalled()
-  })
-
-  it('shows restart preparation failures without relaunching', async () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-    tauriCoreMock.invoke.mockRejectedValueOnce(new Error('restart preparation failed'))
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-    fireEvent.click(screen.getByRole('button', { name: 'Use This Folder and Restart' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Save and Restart' }))
-
-    expect(await screen.findByText('restart preparation failed')).toBeInTheDocument()
-    expect(tauriProcessMock.relaunch).not.toHaveBeenCalled()
-  })
-
-  it('shows the saved restart-required state inside the storage section', () => {
-    const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: object }
-    tauriWindow.__TAURI_INTERNALS__ = {}
-    useSettingsStore.setState({ appModeRequiresRestart: true })
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-
-    expect(screen.getByText('The storage change has been saved. Restart the app for the new data directory to take effect.')).toBeInTheDocument()
   })
 
   it('previews UI zoom while dragging and applies it once on release', async () => {
@@ -711,7 +513,7 @@ describe('Settings > General tab', () => {
       expect(desktopNotificationsMock.requestDesktopNotificationPermission).toHaveBeenCalledTimes(1)
     })
     expect(desktopNotificationsMock.notifyDesktop).toHaveBeenCalledWith({
-      title: 'Claude Code Haha notifications are enabled',
+      title: 'Ycode notifications are enabled',
       body: 'Permission prompts and completed agent replies will now use system notifications.',
     })
   })
@@ -1315,7 +1117,7 @@ describe('Settings > About tab', () => {
     useUpdateStore.setState({
       status: 'available',
       availableVersion: '0.1.5',
-      releaseNotes: '# Claude Code Haha v0.1.5\n\n- Fixed updater rendering\n- Added markdown support',
+      releaseNotes: '# Ycode v0.1.5\n\n- Fixed updater rendering\n- Added markdown support',
       progressPercent: 0,
       downloadedBytes: 0,
       totalBytes: null,
@@ -1332,7 +1134,7 @@ describe('Settings > About tab', () => {
   it('renders release notes with markdown formatting', async () => {
     render(<Settings />)
 
-    expect(await screen.findByRole('heading', { name: 'Claude Code Haha v0.1.5' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Ycode v0.1.5' })).toBeInTheDocument()
     expect(screen.getByText('Fixed updater rendering')).toBeInTheDocument()
     expect(screen.getByText('Added markdown support')).toBeInTheDocument()
   })
@@ -1341,7 +1143,7 @@ describe('Settings > About tab', () => {
     useUpdateStore.setState({
       status: 'downloading',
       availableVersion: '0.1.5',
-      releaseNotes: '# Claude Code Haha v0.1.5',
+      releaseNotes: '# Ycode v0.1.5',
       progressPercent: 0,
       downloadedBytes: 1536,
       totalBytes: null,

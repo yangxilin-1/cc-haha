@@ -236,8 +236,17 @@ describe('Sidebar', () => {
     window.localStorage.removeItem(PROJECT_SORT_STORAGE_KEY)
   })
 
-  it('opens a new tab when creating a session from the sidebar', async () => {
-    createSession.mockResolvedValue('session-new-1')
+  it('opens the empty session page from the sidebar new session button', async () => {
+    useSessionStore.setState({
+      activeSessionId: 'session-open',
+      sessions: [
+        makeSession('session-open', 'Open Session', '/workspace/project', new Date().toISOString()),
+      ],
+    })
+    useTabStore.setState({
+      tabs: [{ sessionId: 'session-open', title: 'Open Session', type: 'session', status: 'idle' }],
+      activeTabId: 'session-open',
+    })
 
     render(<Sidebar />)
 
@@ -245,15 +254,13 @@ describe('Sidebar', () => {
       fireEvent.click(screen.getByRole('button', { name: 'New Session' }))
     })
 
-    await waitFor(() => {
-      expect(createSession).toHaveBeenCalled()
-      expect(connectToSession).toHaveBeenCalledWith('session-new-1')
-    })
-
+    expect(createSession).not.toHaveBeenCalled()
+    expect(connectToSession).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().activeSessionId).toBeNull()
     expect(useTabStore.getState().tabs).toEqual([
-      { sessionId: 'session-new-1', title: 'New Session', type: 'session', status: 'idle' },
+      { sessionId: 'session-open', title: 'Open Session', type: 'session', status: 'idle' },
     ])
-    expect(useTabStore.getState().activeTabId).toBe('session-new-1')
+    expect(useTabStore.getState().activeTabId).toBeNull()
     expect(screen.getByRole('complementary')).not.toHaveAttribute('data-tauri-drag-region')
   })
 
@@ -415,7 +422,7 @@ describe('Sidebar', () => {
     })
 
     await waitFor(() => {
-      expect(createSession).toHaveBeenCalledWith('/workspace/alpha')
+      expect(createSession).toHaveBeenCalledWith('/workspace/alpha', { mode: 'code' })
       expect(connectToSession).toHaveBeenCalledWith('session-alpha-new')
     })
   })
@@ -439,7 +446,7 @@ describe('Sidebar', () => {
     })
 
     await waitFor(() => {
-      expect(createSession).toHaveBeenCalledWith(undefined)
+      expect(createSession).toHaveBeenCalledWith(undefined, { mode: 'code' })
       expect(connectToSession).toHaveBeenCalledWith('session-blank-project')
     })
   })
@@ -634,7 +641,7 @@ describe('Sidebar', () => {
     })
   })
 
-  it('restores a hidden project when a new session is created in that project', async () => {
+  it('keeps hidden projects hidden when the main new session button opens the empty page', async () => {
     window.localStorage.setItem(PROJECT_HIDDEN_STORAGE_KEY, JSON.stringify(['/workspace/beta']))
     createSession.mockResolvedValue('beta-new')
     const now = new Date().toISOString()
@@ -657,18 +664,10 @@ describe('Sidebar', () => {
       fireEvent.click(screen.getByRole('button', { name: 'New Session' }))
     })
 
-    await waitFor(() => {
-      expect(createSession).toHaveBeenCalledWith('/workspace/beta')
-      expect(screen.getByText('beta')).toBeInTheDocument()
-    })
-    expect(JSON.parse(window.localStorage.getItem(PROJECT_HIDDEN_STORAGE_KEY) ?? '[]')).toEqual([])
-    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).toHaveBeenCalledWith({
-      projectOrder: [],
-      pinnedProjects: [],
-      hiddenProjects: [],
-      projectOrganization: 'recentProject',
-      projectSortBy: 'updatedAt',
-    })
+    expect(createSession).not.toHaveBeenCalled()
+    expect(screen.queryByText('beta')).not.toBeInTheDocument()
+    expect(JSON.parse(window.localStorage.getItem(PROJECT_HIDDEN_STORAGE_KEY) ?? '[]')).toEqual(['/workspace/beta'])
+    expect(desktopUiPreferencesApiMock.updateSidebarPreferences).not.toHaveBeenCalled()
   })
 
   it('uses server sidebar preferences across browser and desktop storage contexts', async () => {
@@ -816,11 +815,11 @@ describe('Sidebar', () => {
     render(<Sidebar />)
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'New Session' }))
+      fireEvent.click(screen.getByRole('button', { name: 'New session in cc-haha' }))
     })
 
     await waitFor(() => {
-      expect(createSession).toHaveBeenCalledWith('D:\\workspace\\code\\cc-haha')
+      expect(createSession).toHaveBeenCalledWith('D:\\workspace\\code\\cc-haha', { mode: 'code' })
     })
     expect(JSON.parse(window.localStorage.getItem(PROJECT_HIDDEN_STORAGE_KEY) ?? '[]')).toEqual(['D:\\'])
     expect(desktopUiPreferencesApiMock.updateSidebarPreferences).not.toHaveBeenCalled()
@@ -861,11 +860,16 @@ describe('Sidebar', () => {
 
   it('shows a toast when session creation fails', async () => {
     createSession.mockRejectedValue(new Error('boom'))
+    useSessionStore.setState({
+      sessions: [
+        makeSession('alpha-1', 'Alpha Session', '/workspace/alpha', new Date().toISOString()),
+      ],
+    })
 
     render(<Sidebar />)
 
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'New Session' }))
+      fireEvent.click(screen.getByRole('button', { name: 'New session in alpha' }))
     })
 
     await waitFor(() => {
@@ -1044,25 +1048,15 @@ describe('Sidebar', () => {
     expect(screen.getByRole('button', { name: /Third Session/ })).toHaveClass('sidebar-session-row--idle')
   })
 
-  it('collapses into an icon rail and expands back', async () => {
-    render(<Sidebar />)
+  it('renders the icon rail when the shell collapses the sidebar', async () => {
+    useUIStore.setState({ sidebarOpen: false })
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
-    })
+    render(<Sidebar />)
 
     expect(useUIStore.getState().sidebarOpen).toBe(false)
     expect(screen.queryByPlaceholderText('Search sessions')).not.toBeInTheDocument()
     expect(screen.getByRole('complementary')).toHaveAttribute('data-state', 'closed')
-    expect(screen.getByTestId('sidebar-expand-button')).toHaveClass('sidebar-toggle-button--collapsed')
-
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }))
-    })
-
-    expect(useUIStore.getState().sidebarOpen).toBe(true)
-    expect(screen.getByPlaceholderText('Search sessions')).toBeInTheDocument()
-    expect(screen.getByRole('complementary')).toHaveAttribute('data-state', 'open')
+    expect(screen.getByRole('button', { name: 'New Session' })).toHaveClass('h-10', 'w-10')
   })
 
   it('renders search controls without the removed embedded project filter', () => {
@@ -1090,7 +1084,6 @@ describe('Sidebar', () => {
 
   it('keeps mobile navigation focused on chat sessions', async () => {
     const onRequestClose = vi.fn()
-    createSession.mockResolvedValue('session-mobile-new')
     useSessionStore.setState({
       sessions: [
         {
@@ -1113,14 +1106,15 @@ describe('Sidebar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Open Session/ }))
     expect(onRequestClose).toHaveBeenCalledTimes(1)
+    const connectCallsBeforeNewSession = connectToSession.mock.calls.length
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'New Session' }))
     })
 
-    await waitFor(() => {
-      expect(createSession).toHaveBeenCalled()
-    })
+    expect(createSession).not.toHaveBeenCalled()
+    expect(connectToSession).toHaveBeenCalledTimes(connectCallsBeforeNewSession)
+    expect(useTabStore.getState().activeTabId).toBeNull()
     expect(onRequestClose).toHaveBeenCalledTimes(2)
   })
 

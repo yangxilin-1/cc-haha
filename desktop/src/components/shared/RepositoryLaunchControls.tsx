@@ -30,6 +30,7 @@ type Props = {
   onLaunchReadyChange?: (ready: boolean) => void
   disabled?: boolean
   placement?: 'standalone' | 'composer'
+  showDirectoryPicker?: boolean
 }
 
 const BRANCH_MENU_HEIGHT = 360
@@ -57,6 +58,7 @@ export function RepositoryLaunchControls({
   onLaunchReadyChange,
   disabled = false,
   placement = 'standalone',
+  showDirectoryPicker = true,
 }: Props) {
   const t = useTranslation()
   const isMobileBrowser = useMobileViewport() && !isTauriRuntime()
@@ -342,7 +344,9 @@ export function RepositoryLaunchControls({
             ? 'min-h-[44px] flex-nowrap bg-transparent px-4 py-2'
           : 'min-h-[48px] flex-nowrap rounded-b-xl bg-[var(--color-surface-container-low)] px-4 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]'
       }`}>
-        <DirectoryPicker value={workDir} onChange={onWorkDirChange} variant="workbar" isGitProject={isGitReady} />
+        {showDirectoryPicker && (
+          <DirectoryPicker value={workDir} onChange={onWorkDirChange} variant="workbar" isGitProject={isGitReady} />
+        )}
 
         {loading && workDir && !isMobileBrowser && (
           <div className="inline-flex h-9 items-center gap-1.5 rounded-[7px] px-2.5 text-[13px] text-[var(--color-text-secondary)]">

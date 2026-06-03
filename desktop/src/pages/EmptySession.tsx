@@ -8,8 +8,10 @@ import { usePluginStore } from '../stores/pluginStore'
 import { useSessionRuntimeStore, DRAFT_RUNTIME_SELECTION_KEY } from '../stores/sessionRuntimeStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useUIStore } from '../stores/uiStore'
+import { useModeStore } from '../stores/modeStore'
 import { SETTINGS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { RepositoryLaunchControls } from '../components/shared/RepositoryLaunchControls'
+import { DirectoryPicker } from '../components/shared/DirectoryPicker'
 import { PermissionModeSelector } from '../components/controls/PermissionModeSelector'
 import { ModelSelector } from '../components/controls/ModelSelector'
 import { AttachmentGallery } from '../components/chat/AttachmentGallery'
@@ -42,6 +44,13 @@ import type { SlashCommandOption } from '../components/chat/composerUtils'
 type Attachment = ComposerAttachment
 
 type Translate = ReturnType<typeof useTranslation>
+
+function getPathLabel(path: string | null | undefined, fallback: string): string {
+  const normalized = path?.trim()
+  if (!normalized) return fallback
+  const parts = normalized.split(/[\\/]+/).filter(Boolean)
+  return parts[parts.length - 1] || fallback
+}
 
 function getApiErrorCode(error: unknown): string | null {
   if (!(error instanceof ApiError)) return null
@@ -109,6 +118,8 @@ export function EmptySession() {
   const connectToSession = useChatStore((state) => state.connectToSession)
   const setActiveView = useUIStore((state) => state.setActiveView)
   const addToast = useUIStore((state) => state.addToast)
+  const currentMode = useModeStore((state) => state.currentMode)
+  const isChatMode = currentMode === 'chat'
   const currentModel = useSettingsStore((state) => state.currentModel)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const defaultPermissionMode = useSettingsStore((state) => state.permissionMode)
@@ -169,6 +180,17 @@ export function EmptySession() {
   }, [localSlashPanel])
 
   useEffect(() => {
+    if (!isChatMode) return
+    setWorkDir('')
+    setSelectedBranch(null)
+    setUseWorktree(false)
+    setRepositoryLaunchReady(true)
+    setFileSearchOpen(false)
+    setAtFilter('')
+    setAtCursorPos(-1)
+  }, [isChatMode])
+
+  useEffect(() => {
     if (!fileSearchOpen) return
     const handleClick = (event: MouseEvent) => {
       const menu = document.getElementById('file-search-menu')
@@ -187,6 +209,13 @@ export function EmptySession() {
 
   useEffect(() => {
     let cancelled = false
+
+    if (isChatMode) {
+      setSlashCommands([])
+      return () => {
+        cancelled = true
+      }
+    }
 
     skillsApi.list(workDir || undefined)
       .then(({ skills }) => {
@@ -209,7 +238,7 @@ export function EmptySession() {
     return () => {
       cancelled = true
     }
-  }, [workDir, lastPluginReloadSummary])
+  }, [isChatMode, workDir, lastPluginReloadSummary])
 
   const allSlashCommands = useMemo(
     () => mergeSlashCommands(slashCommands, getLocalizedFallbackCommands(t)),
@@ -235,8 +264,9 @@ export function EmptySession() {
   const canSubmit = (
     input.trim().length > 0 ||
     attachments.length > 0 ||
+    isChatMode ||
     !!workDir
-  ) && !isSubmitting && repositoryLaunchReady
+  ) && !isSubmitting && (isChatMode || repositoryLaunchReady)
 
   useEffect(() => {
     setSlashSelectedIndex(0)
@@ -277,9 +307,10 @@ export function EmptySession() {
     try {
       const explicitDraftSelection = useSessionRuntimeStore.getState().selections[DRAFT_RUNTIME_SELECTION_KEY]
       const sessionId = await createSession(
-        workDir || undefined,
+        isChatMode ? undefined : (workDir || undefined),
         {
-          ...(selectedBranch
+          mode: currentMode,
+          ...(!isChatMode && selectedBranch
             ? { repository: { branch: selectedBranch, worktree: useWorktree } }
             : {}),
           permissionMode: draftPermissionMode,
@@ -344,11 +375,15 @@ export function EmptySession() {
       setFileSearchOpen(false)
       setAtFilter('')
       setAtCursorPos(-1)
-    } else {
+    } else if (!isChatMode && workDir) {
       setAtFilter(textBeforeCursor.slice(pos + 1))
       setAtCursorPos(pos)
       setSlashMenuOpen(false)
       setFileSearchOpen(true)
+    } else {
+      setFileSearchOpen(false)
+      setAtFilter('')
+      setAtCursorPos(-1)
     }
   }
 
@@ -531,52 +566,59 @@ export function EmptySession() {
     })
   }
 
+  const heroProjectName = getPathLabel(workDir, 'Ycode')
+  const heroTitle = isChatMode ? t('empty.title') : t('empty.heroQuestion', { project: heroProjectName })
+  const heroSubtitle = isChatMode ? t('empty.subtitle') : t('empty.codeSubtitle')
+  const projectContextBar = !isChatMode && !isMobileComposer ? (
+    <div className="empty-session-project-bar flex min-h-11 flex-wrap items-center gap-x-5 gap-y-2 px-5 py-3 text-xs text-[var(--color-text-tertiary)]">
+      <DirectoryPicker value={workDir} onChange={handleWorkDirChange} />
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+        <span className="material-symbols-outlined text-[15px]">computer</span>
+        {t('composer.localMode')}
+      </span>
+    </div>
+  ) : null
+
   return (
-    <div className="relative flex flex-1 flex-col overflow-hidden bg-[var(--color-surface)]">
-      <div className={`flex flex-1 flex-col items-center justify-center ${
-        isMobileComposer ? 'px-6 pb-[230px] pt-10' : 'p-8 pb-32'
+    <div className={`empty-session-shell relative flex flex-1 flex-col overflow-hidden bg-background ${
+      isMobileComposer ? 'empty-session-shell--mobile' : ''
+    }`}>
+      <div className={`relative z-10 flex flex-1 flex-col items-center justify-center ${
+        isMobileComposer ? 'px-6 pb-[230px] pt-10' : 'px-8 pb-24 pt-14'
       }`}>
-        <div className={`flex flex-col items-center text-center ${
-          isMobileComposer ? 'max-w-[300px]' : 'max-w-md'
+        <div className={`flex w-full flex-col items-center text-center ${
+          isMobileComposer ? 'max-w-[300px]' : 'max-w-[920px]'
         }`}>
-          <img
-            src="/app-icon.png"
-            alt="Claude Code Haha"
-            className={isMobileComposer ? 'mb-4 h-16 w-16' : 'mb-6 h-24 w-24'}
-          />
           <h1
-            className={`mb-2 font-extrabold tracking-tight text-[var(--color-text-primary)] ${
-              isMobileComposer ? 'text-2xl' : 'text-3xl'
+            className={`font-extrabold tracking-normal text-[var(--color-text-primary)] ${
+              isMobileComposer ? 'text-2xl' : 'text-[36px] leading-[1.16]'
             }`}
             style={{ fontFamily: 'var(--font-headline)' }}
           >
-            {t('empty.title')}
+            {heroTitle}
           </h1>
           <p
-            className={`mx-auto text-[var(--color-text-secondary)] ${
-              isMobileComposer ? 'max-w-[280px] text-sm leading-6' : 'max-w-xs'
+            className={`mx-auto mt-4 text-[var(--color-text-secondary)] ${
+              isMobileComposer ? 'max-w-[280px] text-sm leading-6' : 'max-w-[640px] text-[15px] leading-7'
             }`}
             style={{ fontFamily: 'var(--font-body)' }}
           >
-            {t('empty.subtitle')}
+            {heroSubtitle}
           </p>
         </div>
-      </div>
 
-      <div
-        data-testid="empty-session-composer-shell"
-        className={`absolute left-0 right-0 z-30 flex justify-center ${
-        isMobileComposer
-          ? 'bottom-0 px-3 pb-[calc(env(safe-area-inset-bottom)+10px)]'
-          : 'bottom-4 px-8'
-      }`}
-      >
-        <div className={`flex w-full flex-col ${isMobileComposer ? 'max-w-none' : 'max-w-3xl'}`}>
+        <div
+          data-testid="empty-session-composer-shell"
+          className={`z-30 mt-8 flex w-full justify-center ${
+            isMobileComposer ? 'fixed bottom-0 left-0 right-0 px-3 pb-[calc(env(safe-area-inset-bottom)+10px)]' : ''
+          }`}
+        >
+        <div className={`flex w-full flex-col ${isMobileComposer ? 'max-w-none' : 'max-w-[780px]'}`}>
           <div
             ref={panelRef}
             data-testid="empty-session-composer-panel"
-            className={`glass-panel relative flex flex-col gap-3 overflow-visible ${
-              isMobileComposer ? 'rounded-2xl p-3 shadow-[0_-12px_36px_rgba(54,35,28,0.12)]' : 'rounded-xl p-0'
+            className={`empty-session-composer-panel relative flex flex-col overflow-visible ${
+              isMobileComposer ? 'rounded-2xl p-3 shadow-[0_-12px_36px_rgba(54,35,28,0.12)]' : 'p-0'
             } ${isDragActive ? 'composer-drop-target-active' : ''}`}
             {...dragHandlers}
           >
@@ -588,8 +630,8 @@ export function EmptySession() {
               />
             )}
 
-            <div className={isMobileComposer ? 'contents' : 'flex flex-col gap-3 p-4'}>
-              {fileSearchOpen && (
+            <div className={isMobileComposer ? 'contents' : 'flex flex-col'}>
+              {!isChatMode && workDir && fileSearchOpen && (
                 <FileSearchMenu
                   ref={fileSearchRef}
                   cwd={workDir || ''}
@@ -642,7 +684,7 @@ export function EmptySession() {
                 <div ref={slashMenuRef}>
                   <LocalSlashCommandPanel
                     command={localSlashPanel}
-                    cwd={workDir || undefined}
+                    cwd={isChatMode ? undefined : workDir || undefined}
                     commands={allSlashCommands}
                     onClose={() => setLocalSlashPanel(null)}
                   />
@@ -681,27 +723,27 @@ export function EmptySession() {
               )}
 
               {attachments.length > 0 && (
-                <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
+                <div className="px-5 pt-4">
+                  <AttachmentGallery attachments={attachments} variant="composer" onRemove={removeAttachment} />
+                </div>
               )}
 
-              <div className="flex items-start gap-3">
-                <textarea
-                  ref={textareaRef}
-                  value={input}
-                  onChange={(event) => handleInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
-                  onKeyDown={handleKeyDown}
-                  onPaste={handlePaste}
-                  className={`flex-1 resize-none border-none bg-transparent leading-relaxed text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] ${
-                    isMobileComposer ? 'max-h-[132px] min-h-[72px] py-1.5 text-base' : 'py-2'
-                  }`}
-                  style={{ fontFamily: 'var(--font-body)' }}
-                  placeholder={t('empty.placeholder')}
-                  rows={2}
-                />
-              </div>
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(event) => handleInputChange(event.target.value, event.target.selectionStart ?? event.target.value.length)}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                className={`w-full resize-none border-none bg-transparent text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] ${
+                  isMobileComposer ? 'max-h-[132px] min-h-[72px] py-1.5 text-base' : 'min-h-[92px] px-5 pb-2 pt-4 text-[15px] leading-7'
+                }`}
+                style={{ fontFamily: 'var(--font-body)' }}
+                placeholder={t('empty.placeholder')}
+                rows={2}
+              />
 
-              <div className={`border-t border-[var(--color-border-separator)] pt-3 ${
-                isMobileComposer ? 'flex flex-wrap items-center gap-2' : 'flex items-center justify-between'
+              <div className={`${
+                isMobileComposer ? 'flex flex-wrap items-center gap-2 border-t border-[var(--color-border-separator)] pt-3' : 'flex items-center justify-between px-4 pb-3 pt-1'
               }`}>
                 <div className="flex shrink-0 items-center gap-2">
                   <div ref={plusMenuRef} className="relative">
@@ -709,7 +751,7 @@ export function EmptySession() {
                       onClick={() => setPlusMenuOpen((prev) => !prev)}
                       aria-label="Open composer tools"
                       className={`text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] ${
-                        isMobileComposer ? 'inline-flex h-11 w-11 items-center justify-center rounded-xl' : 'rounded-lg p-1.5'
+                        isMobileComposer ? 'inline-flex h-11 w-11 items-center justify-center rounded-xl' : 'inline-flex h-8 w-8 items-center justify-center rounded-lg'
                       }`}
                     >
                       <span className="material-symbols-outlined text-[18px]">add</span>
@@ -738,7 +780,7 @@ export function EmptySession() {
                   </div>
 
                   <PermissionModeSelector
-                    workDir={workDir}
+                    workDir={isChatMode ? undefined : workDir}
                     compact={isMobileComposer}
                     value={draftPermissionMode}
                     onChange={setDraftPermissionMode}
@@ -761,17 +803,18 @@ export function EmptySession() {
                     aria-label={t('common.run')}
                     title={isMobileComposer ? t('common.run') : undefined}
                     className={`flex shrink-0 items-center justify-center gap-1 rounded-lg bg-[image:var(--gradient-btn-primary)] text-xs font-semibold text-[var(--color-btn-primary-fg)] shadow-[var(--shadow-button-primary)] transition-all hover:brightness-105 disabled:opacity-30 ${
-                      isMobileComposer ? 'h-11 w-11 rounded-xl px-0 py-0' : 'w-[112px] px-3 py-1.5'
+                      isMobileComposer ? 'h-11 w-11 rounded-xl px-0 py-0' : 'h-8 w-8 rounded-lg px-0 py-0'
                     }`}
                   >
-                    {!isMobileComposer && t('common.run')}
-                    <span className="material-symbols-outlined text-[14px]">arrow_forward</span>
+                    <span className="material-symbols-outlined text-[16px]">arrow_upward</span>
                   </button>
                 </div>
               </div>
             </div>
 
-            {!isMobileComposer && (
+            {projectContextBar}
+
+            {!isChatMode && !isMobileComposer && workDir && (
               <RepositoryLaunchControls
                 workDir={workDir}
                 onWorkDirChange={handleWorkDirChange}
@@ -782,11 +825,12 @@ export function EmptySession() {
                 onLaunchReadyChange={setRepositoryLaunchReady}
                 disabled={isSubmitting}
                 placement="composer"
+                showDirectoryPicker={false}
               />
             )}
           </div>
 
-          {isMobileComposer && (
+          {!isChatMode && isMobileComposer && (
             <RepositoryLaunchControls
               workDir={workDir}
               onWorkDirChange={handleWorkDirChange}
@@ -798,6 +842,7 @@ export function EmptySession() {
               disabled={isSubmitting}
             />
           )}
+        </div>
         </div>
       </div>
 

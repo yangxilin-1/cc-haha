@@ -309,11 +309,11 @@ fn dir_has_portable_data(dir: &Path) -> bool {
         || dir.join("cc-haha").is_dir()
 }
 
-/// Resolve the default portable config directory: exe_dir/CLAUDE_CONFIG_DIR.
+/// Resolve the default portable config directory: exe_dir/Ycode Data.
 fn get_default_portable_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?.to_path_buf();
-    dir.push("CLAUDE_CONFIG_DIR");
+    dir.push("Ycode Data");
     Some(dir)
 }
 
@@ -875,13 +875,13 @@ fn show_main_window(app: &AppHandle) {
 
 fn setup_system_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let menu = MenuBuilder::new(app)
-        .text(TRAY_SHOW_ID, "Show Claude Code Haha")
+        .text(TRAY_SHOW_ID, "Show Ycode")
         .separator()
-        .text(TRAY_QUIT_ID, "Quit Claude Code Haha")
+        .text(TRAY_QUIT_ID, "Quit Ycode")
         .build()?;
 
     let mut tray = TrayIconBuilder::with_id("main-tray")
-        .tooltip("Claude Code Haha")
+        .tooltip("Ycode")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
@@ -1588,7 +1588,7 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     // 单一合并 sidecar：第一个参数选 server / cli / adapters 模式。
     let mut sidecar = app
         .shell()
-        .sidecar("claude-sidecar")
+        .sidecar("ycode-sidecar")
         .map_err(|err| format!("resolve sidecar: {err}"))?;
     for (key, value) in terminal_environment(&default_shell(None)) {
         sidecar = sidecar.env(key, value);
@@ -1597,7 +1597,10 @@ fn start_server_sidecar(app: &AppHandle) -> Result<ServerRuntime, String> {
     // portable config directory. Also set XDG_CACHE_HOME to redirect the
     // env-paths cache from %LOCALAPPDATA%\claude-cli-nodejs\ to alongside
     // the portable config dir.
-    if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+    if let Some(config_dir) = std::env::var("CLAUDE_CONFIG_DIR")
+        .ok()
+        .or_else(|| get_default_portable_dir().map(|path| path.to_string_lossy().to_string()))
+    {
         let cache_dir = PathBuf::from(&config_dir).join("Cache");
         if let Err(e) = fs::create_dir_all(&cache_dir) {
             eprintln!("[desktop] failed to create Cache dir: {e}");
@@ -1724,14 +1727,17 @@ fn start_adapters_sidecars(app: &AppHandle) -> Result<Vec<CommandChild>, String>
     ] {
         let mut sidecar = app
             .shell()
-            .sidecar("claude-sidecar")
+            .sidecar("ycode-sidecar")
             .map_err(|err| format!("resolve {label} adapter sidecar: {err}"))?;
         for (key, value) in terminal_environment(&default_shell(None)) {
             sidecar = sidecar.env(key, value);
         }
         // Pass through CLAUDE_CONFIG_DIR for portable installs
         let mut sidecar_final = sidecar.env("ADAPTER_SERVER_URL", &server_ws_url);
-        if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        if let Some(config_dir) = std::env::var("CLAUDE_CONFIG_DIR")
+            .ok()
+            .or_else(|| get_default_portable_dir().map(|path| path.to_string_lossy().to_string()))
+        {
             let cache_dir = PathBuf::from(&config_dir).join("Cache");
             sidecar_final = sidecar_final
                 .env("CLAUDE_CONFIG_DIR", &config_dir)
@@ -1894,7 +1900,7 @@ fn kill_stale_unix_adapter_sidecars() {
         if pid == current_pid {
             continue;
         }
-        if !command.contains("claude-sidecar") || !command.contains(" adapters") {
+        if !command.contains("ycode-sidecar") || !command.contains(" adapters") {
             continue;
         }
 
@@ -1905,9 +1911,9 @@ fn kill_stale_unix_adapter_sidecars() {
 #[cfg(target_os = "windows")]
 fn kill_windows_sidecars() {
     for image_name in [
-        "claude-sidecar-x86_64-pc-windows-msvc.exe",
-        "claude-sidecar-aarch64-pc-windows-msvc.exe",
-        "claude-sidecar.exe",
+        "ycode-sidecar-x86_64-pc-windows-msvc.exe",
+        "ycode-sidecar-aarch64-pc-windows-msvc.exe",
+        "ycode-sidecar.exe",
     ] {
         let _ = StdCommand::new("taskkill")
             .args(["/F", "/T", "/IM", image_name])
@@ -2265,12 +2271,12 @@ pub fn run() {
     let builder = builder
         .menu(|app| {
             let about_item =
-                MenuItemBuilder::with_id("nav_about", "关于 Claude Code Haha").build(app)?;
+                MenuItemBuilder::with_id("nav_about", "关于 Ycode").build(app)?;
             let settings_item = MenuItemBuilder::with_id("nav_settings", "设置...")
                 .accelerator("CmdOrCtrl+,")
                 .build(app)?;
 
-            let app_submenu = SubmenuBuilder::new(app, "Claude Code Haha")
+            let app_submenu = SubmenuBuilder::new(app, "Ycode")
                 .item(&about_item)
                 .separator()
                 .item(&settings_item)

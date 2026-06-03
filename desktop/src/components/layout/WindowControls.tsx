@@ -43,9 +43,10 @@ export function WindowControls() {
   if (!showWindowControls || !win) return null
 
   return (
-    <div data-testid="window-controls" className="flex items-stretch flex-shrink-0 -my-px">
+    <div data-testid="window-controls" className="window-controls flex items-stretch flex-shrink-0 -my-px">
       {/* Minimize */}
       <button
+        type="button"
         onClick={() => runWindowAction(() => win.minimize())}
         aria-label="Minimize window"
         className="w-[46px] h-full flex items-center justify-center text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] transition-colors"
@@ -57,6 +58,7 @@ export function WindowControls() {
 
       {/* Maximize / Restore */}
       <button
+        type="button"
         onClick={() => runWindowAction(() => win.toggleMaximize())}
         aria-label={maximized ? 'Restore window' : 'Maximize window'}
         className="w-[46px] h-full flex items-center justify-center text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] transition-colors"
@@ -75,6 +77,7 @@ export function WindowControls() {
 
       {/* Close */}
       <button
+        type="button"
         onClick={() => runWindowAction(() => win.close())}
         aria-label="Close window"
         className="w-[46px] h-full flex items-center justify-center text-[var(--color-text-secondary)] hover:bg-[var(--color-window-close-hover)] hover:text-white transition-colors"

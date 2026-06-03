@@ -10,8 +10,10 @@ import { useTabStore } from './tabStore'
 import type { SessionListItem } from '../types/session'
 import type { PermissionMode } from '../types/settings'
 import { isPlaceholderSessionTitle } from '../lib/sessionTitle'
+import type { SessionMode } from '../modes/types'
 
 type CreateSessionOptions = {
+  mode?: SessionMode
   repository?: CreateSessionRepositoryOptions
   permissionMode?: PermissionMode
 }
@@ -90,19 +92,23 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   createSession: async (workDir?: string, options?: CreateSessionOptions) => {
     const { sessionId: id, workDir: resolvedWorkDir } = await sessionsApi.create({
       ...(workDir ? { workDir } : {}),
+      ...(options?.mode ? { mode: options.mode } : {}),
       ...(options?.repository ? { repository: options.repository } : {}),
       ...(options?.permissionMode ? { permissionMode: options.permissionMode } : {}),
     })
     const now = new Date().toISOString()
+    const mode = options?.mode ?? 'code'
+    const sessionWorkDir = mode === 'chat' ? null : resolvedWorkDir ?? workDir ?? null
     const optimisticSession: SessionListItem = {
       id,
       title: 'New Session',
       createdAt: now,
       modifiedAt: now,
       messageCount: 0,
-      projectPath: '',
-      workDir: resolvedWorkDir ?? workDir ?? null,
-      projectRoot: resolvedWorkDir ?? workDir ?? null,
+      mode,
+      projectPath: mode === 'chat' ? '__chat__' : '',
+      workDir: sessionWorkDir,
+      projectRoot: sessionWorkDir,
       workDirExists: true,
       permissionMode: options?.permissionMode,
     }

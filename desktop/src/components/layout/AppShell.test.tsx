@@ -3,6 +3,8 @@ import '@testing-library/jest-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useUIStore } from '../../stores/uiStore'
 import { useSessionStore } from '../../stores/sessionStore'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
 
 const mocks = vi.hoisted(() => ({
   initializeDesktopServerUrl: vi.fn(),
@@ -122,6 +124,8 @@ describe('AppShell boot flow', () => {
     mocks.tabState.activeTabId = null
     mocks.tabState.tabs = []
     useSessionStore.setState({ sessions: [], activeSessionId: null, isLoading: false, error: null })
+    useWorkspacePanelStore.setState(useWorkspacePanelStore.getInitialState(), true)
+    useTerminalPanelStore.setState(useTerminalPanelStore.getInitialState(), true)
     useUIStore.setState({ sidebarOpen: true })
   })
 
@@ -131,7 +135,9 @@ describe('AppShell boot flow', () => {
     expect(screen.getByText('app.launching')).toBeInTheDocument()
 
     expect(await screen.findByText('sidebar loaded')).toBeInTheDocument()
-    expect(screen.getByText('tabs loaded')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Chat/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /Code/i })).toBeInTheDocument()
+    expect(screen.queryByText('tabs loaded')).not.toBeInTheDocument()
     expect(screen.getByText('content loaded')).toBeInTheDocument()
     expect(screen.getByText('updates loaded')).toBeInTheDocument()
   })
@@ -175,6 +181,48 @@ describe('AppShell boot flow', () => {
     await waitFor(() => {
       expect(mocks.connectToSession).toHaveBeenCalledWith('session-1')
     })
+  })
+
+  it('routes topbar code tools to the existing terminal and workspace panels', async () => {
+    mocks.tabState.activeTabId = 'session-1'
+    mocks.tabState.tabs = [
+      {
+        sessionId: 'session-1',
+        title: 'Existing session',
+        type: 'session',
+        status: 'idle',
+      },
+    ]
+    useSessionStore.setState({
+      sessions: [{
+        id: 'session-1',
+        title: 'Existing session',
+        createdAt: '2026-05-10T00:00:00.000Z',
+        modifiedAt: '2026-05-10T00:00:00.000Z',
+        messageCount: 1,
+        projectPath: '/workspace/project',
+        workDir: '/workspace/project',
+        workDirExists: true,
+        mode: 'code',
+      }],
+      activeSessionId: 'session-1',
+      isLoading: false,
+      error: null,
+    })
+
+    render(<AppShell />)
+
+    await screen.findByText('sidebar loaded')
+
+    fireEvent.click(screen.getByRole('button', { name: 'tabs.openTerminal' }))
+    expect(useTerminalPanelStore.getState().isPanelOpen('session-1')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'tabs.showWorkspace' }))
+    expect(useWorkspacePanelStore.getState().isPanelOpen('session-1')).toBe(true)
+    expect(useWorkspacePanelStore.getState().getMode('session-1')).toBe('workspace')
+
+    fireEvent.click(screen.getByRole('button', { name: 'tabs.hideWorkspace' }))
+    expect(useWorkspacePanelStore.getState().isPanelOpen('session-1')).toBe(false)
   })
 
   it('shows the H5 connection view in browser mode when startup needs H5 auth', async () => {

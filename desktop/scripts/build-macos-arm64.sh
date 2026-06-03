@@ -9,12 +9,12 @@ REPO_ROOT="$(cd "${DESKTOP_DIR}/.." && pwd)"
 TARGET_TRIPLE="aarch64-apple-darwin"
 TAURI_TARGET_DIR="${DESKTOP_DIR}/src-tauri/target"
 CANONICAL_OUTPUT_DIR="${DESKTOP_DIR}/build-artifacts/macos-arm64"
-APP_BUNDLE_NAME="Claude Code Haha.app"
-APP_BUNDLE_ID="com.claude-code-haha.desktop"
+APP_BUNDLE_NAME="Ycode.app"
+APP_BUNDLE_ID="com.ycode.desktop"
 
 usage() {
   cat <<'EOF'
-Build Claude Code Haha desktop for macOS Apple Silicon and output a DMG.
+Build Ycode desktop for macOS Apple Silicon and output a DMG.
 
 Usage:
   ./desktop/scripts/build-macos-arm64.sh [extra tauri build args...]
@@ -68,7 +68,7 @@ fi
 # ── 清理 + 显式预热前端 / sidecar ────────────────────────────
 # 之前遇到过两类"改了源码,build 出来的 .app 还是旧行为"的诡异 case:
 #   1) Bun.build / Tauri bundler 某一层缓存把旧 sidecar binary 复用进新 .app
-#   2) Tauri/Rust target 缓存复用旧 claude-code-desktop,导致新 dist 没被嵌进去
+#   2) Tauri/Rust target cache reuses the old app binary, causing new dist to be missed
 # 第二类尤其隐蔽: dist 是新的,sidecar 也是新的,但 WebView 运行的还是旧前端。
 #
 # 默认做四件事强制 fresh build:
@@ -79,7 +79,7 @@ fi
 #   4) 复制到 canonical output 前再次清空输出目录
 # 任一步失败,整个脚本立即退出(set -e)。
 echo "[build-macos-arm64] Cleaning stale sidecar binaries, frontend output, and Tauri bundle cache..."
-rm -rf "${DESKTOP_DIR}/src-tauri/binaries/claude-sidecar-"*
+rm -rf "${DESKTOP_DIR}/src-tauri/binaries/ycode-sidecar-"*
 rm -rf "${DESKTOP_DIR}/dist"
 rm -f "${DESKTOP_DIR}/tsconfig.tsbuildinfo"
 
@@ -87,25 +87,25 @@ if [[ "${PRESERVE_TAURI_TARGET:-0}" == "1" ]]; then
   echo "[build-macos-arm64] PRESERVE_TAURI_TARGET=1: keeping Rust dependency cache, clearing app-specific artifacts only..."
   rm -rf "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}/release/bundle"
   rm -rf "${DESKTOP_DIR}/src-tauri/target/release/bundle"
-  rm -f "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}/release/claude-code-desktop"
-  rm -f "${DESKTOP_DIR}/src-tauri/target/release/claude-code-desktop"
+  rm -f "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}/release/ycode-desktop"
+  rm -f "${DESKTOP_DIR}/src-tauri/target/release/ycode-desktop"
   find "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}/release/build" \
-    -maxdepth 1 -name 'claude-code-desktop-*' -exec rm -rf {} + 2>/dev/null || true
+    -maxdepth 1 -name 'ycode-desktop-*' -exec rm -rf {} + 2>/dev/null || true
   find "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}/release/.fingerprint" \
-    -maxdepth 1 -name 'claude-code-desktop-*' -exec rm -rf {} + 2>/dev/null || true
+    -maxdepth 1 -name 'ycode-desktop-*' -exec rm -rf {} + 2>/dev/null || true
   find "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}/release/deps" \
-    -maxdepth 1 \( -name 'claude_code_desktop-*' -o -name 'libclaude_code_desktop-*' \) -exec rm -f {} + 2>/dev/null || true
+    -maxdepth 1 \( -name 'ycode_desktop-*' -o -name 'libycode_desktop-*' \) -exec rm -f {} + 2>/dev/null || true
 else
   echo "[build-macos-arm64] Removing Tauri target cache for ${TARGET_TRIPLE} to force fresh embedded frontend assets..."
   rm -rf "${DESKTOP_DIR}/src-tauri/target/${TARGET_TRIPLE}"
   rm -rf "${DESKTOP_DIR}/src-tauri/target/release/bundle"
-  rm -f "${DESKTOP_DIR}/src-tauri/target/release/claude-code-desktop"
+  rm -f "${DESKTOP_DIR}/src-tauri/target/release/ycode-desktop"
   find "${DESKTOP_DIR}/src-tauri/target/release/build" \
-    -maxdepth 1 -name 'claude-code-desktop-*' -exec rm -rf {} + 2>/dev/null || true
+    -maxdepth 1 -name 'ycode-desktop-*' -exec rm -rf {} + 2>/dev/null || true
   find "${DESKTOP_DIR}/src-tauri/target/release/.fingerprint" \
-    -maxdepth 1 -name 'claude-code-desktop-*' -exec rm -rf {} + 2>/dev/null || true
+    -maxdepth 1 -name 'ycode-desktop-*' -exec rm -rf {} + 2>/dev/null || true
   find "${DESKTOP_DIR}/src-tauri/target/release/deps" \
-    -maxdepth 1 \( -name 'claude_code_desktop-*' -o -name 'libclaude_code_desktop-*' \) -exec rm -f {} + 2>/dev/null || true
+    -maxdepth 1 \( -name 'ycode_desktop-*' -o -name 'libycode_desktop-*' \) -exec rm -f {} + 2>/dev/null || true
 fi
 
 echo "[build-macos-arm64] Rebuilding frontend (tsc + vite)..."
@@ -191,7 +191,7 @@ build_canonical_dmg() {
 
   # Create a read-write DMG first so we can customize the Finder layout
   hdiutil create \
-    -volname "Claude Code Haha" \
+    -volname "Ycode" \
     -srcfolder "${staging_dir}" \
     -ov \
     -format UDRW \
@@ -212,7 +212,7 @@ build_canonical_dmg() {
   # 所以这里允许 osascript 非零退出,只 warn,不让 set -e 炸掉整个脚本。
   if ! osascript <<APPLESCRIPT
 tell application "Finder"
-  tell disk "Claude Code Haha"
+  tell disk "Ycode"
     open
     set current view of container window to icon view
     set toolbar visible of container window to false
@@ -254,7 +254,7 @@ codesign_cdhash() {
 
 sign_canonical_app_bundle() {
   local app_bundle="$1"
-  local sidecar="${app_bundle}/Contents/MacOS/claude-sidecar"
+  local sidecar="${app_bundle}/Contents/MacOS/ycode-sidecar"
   local sidecar_cdhash_before=""
   local sidecar_cdhash_after=""
 
@@ -264,7 +264,7 @@ sign_canonical_app_bundle() {
 
   # Tauri --no-sign leaves the outer .app with no sealed resources, which
   # fails strict bundle validation once Resources/icon.icns exists. Sign only
-  # the outer bundle: do not pass --deep, because re-signing claude-sidecar
+  # the outer bundle: do not pass --deep, because re-signing ycode-sidecar
   # changes its code-signature hash and breaks existing macOS Keychain ACLs.
   codesign --force --sign - --timestamp=none "${app_bundle}"
 
@@ -283,7 +283,7 @@ sign_canonical_app_bundle() {
 
 if [[ -n "${LATEST_APP}" ]]; then
   # Normalize the Tauri-produced app in place before copying it anywhere.
-  # Without this, opening target/.../bundle/macos/Claude Code Haha.app directly
+  # Without this, opening target/.../bundle/macos/Ycode.app directly
   # uses the executable's ad-hoc signing identifier instead of the app bundle id,
   # which makes macOS notification authorization behave like a different app.
   sign_canonical_app_bundle "${LATEST_APP}"
@@ -298,7 +298,7 @@ if [[ -n "${LATEST_APP}" ]]; then
   cp -R "${LATEST_APP}" "${CANONICAL_OUTPUT_DIR}/"
   sign_canonical_app_bundle "${CANONICAL_OUTPUT_DIR}/${APP_BUNDLE_NAME}"
   rm -f "${CANONICAL_OUTPUT_DIR}/"*.dmg
-  CANONICAL_DMG="${CANONICAL_OUTPUT_DIR}/$(basename "${LATEST_DMG:-Claude Code Haha_0.1.0_aarch64.dmg}")"
+  CANONICAL_DMG="${CANONICAL_OUTPUT_DIR}/$(basename "${LATEST_DMG:-Ycode_0.1.0_aarch64.dmg}")"
   build_canonical_dmg \
     "${CANONICAL_OUTPUT_DIR}/${APP_BUNDLE_NAME}" \
     "${CANONICAL_DMG}"

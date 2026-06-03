@@ -8,7 +8,7 @@ type MessagesResponse = {
   messages: MessageEntry[]
   taskNotifications?: AgentTaskNotification[]
 }
-type CreateSessionResponse = { sessionId: string; workDir?: string }
+type CreateSessionResponse = { sessionId: string; workDir?: string | null }
 export type BatchDeleteSessionsResponse = {
   ok: boolean
   successes: string[]
@@ -39,6 +39,7 @@ export type CreateSessionRepositoryOptions = {
 }
 export type CreateSessionRequest = {
   workDir?: string
+  mode?: 'code' | 'chat'
   repository?: CreateSessionRepositoryOptions
   permissionMode?: PermissionMode
 }

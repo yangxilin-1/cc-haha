@@ -108,19 +108,6 @@ function Get-LatestArtifact {
   return $null
 }
 
-function Get-StagedArtifactName {
-  param([string]$ArtifactName)
-
-  switch -Regex ($ArtifactName) {
-    '^latest\.json$' { return 'latest.json' }
-    '\.msi\.zip\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.zip.sig" }
-    '\.msi\.zip$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.zip" }
-    '\.msi\.sig$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi.sig" }
-    '\.msi$' { return "Claude-Code-Haha_${appVersion}_windows_x64_msi.msi" }
-    default { return $ArtifactName }
-  }
-}
-
 function Resolve-OutputDirectory {
   param([string]$PreferredPath)
 
@@ -195,13 +182,13 @@ $tauriBuildArgs = @(
   '--target',
   $targetTriple,
   '--bundles',
-  'msi',
+  'nsis,msi',
   '--ci'
 )
 
 $tempConfigPath = $null
 if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-  $tempConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) 'cc-haha.tauri.local.windows.json'
+  $tempConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) 'ycode.tauri.local.windows.json'
   $tempConfig = @{
     bundle = @{
       createUpdaterArtifacts = $false
@@ -223,6 +210,12 @@ Write-Step "Building Windows desktop app for $targetTriple"
 
 Push-Location $desktopDir
 try {
+  Write-Step 'Regenerating Tauri icons from src-tauri\app-icon.png'
+  & bunx tauri icon '.\src-tauri\app-icon.png'
+  if ($LASTEXITCODE -ne 0) {
+    throw "[build-windows-x64] tauri icon failed (exit $LASTEXITCODE)"
+  }
+
   $env:TAURI_ENV_TARGET_TRIPLE = $targetTriple
   & bunx @tauriBuildArgs
   if ($LASTEXITCODE -ne 0) {
@@ -242,7 +235,7 @@ $bundleRoots = @(
   (Join-Path $tauriTargetDir 'release\bundle')
 )
 
-$artifactPatterns = @('*.msi', '*.msi.sig', '*.msi.zip', '*.msi.zip.sig', 'latest.json')
+$artifactPatterns = @('*.exe', '*.msi', '*.zip', '*.sig', 'latest.json')
 $copiedArtifacts = New-Object System.Collections.Generic.List[string]
 
 foreach ($root in $bundleRoots) {
@@ -253,8 +246,7 @@ foreach ($root in $bundleRoots) {
   foreach ($pattern in $artifactPatterns) {
     $artifacts = Get-ChildItem -Path $root -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue
     foreach ($artifact in $artifacts) {
-      $destinationName = Get-StagedArtifactName -ArtifactName $artifact.Name
-      $destination = Join-Path $activeOutputDir $destinationName
+      $destination = Join-Path $activeOutputDir $artifact.Name
       Copy-Item -LiteralPath $artifact.FullName -Destination $destination -Force
       if (-not $copiedArtifacts.Contains($destination)) {
         $copiedArtifacts.Add($destination) | Out-Null

@@ -9,6 +9,7 @@ import { useTabStore, SETTINGS_TAB_ID, SCHEDULED_TAB_ID } from '../../stores/tab
 import { useChatStore } from '../../stores/chatStore'
 import { useOpenTargetStore } from '../../stores/openTargetStore'
 import { desktopUiPreferencesApi, type SidebarProjectPreferences } from '../../api/desktopUiPreferences'
+import { useModeStore } from '../../stores/modeStore'
 
 const isTauri = typeof window !== 'undefined' && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window)
 const isWindows = typeof navigator !== 'undefined' && /Win/.test(navigator.platform)
@@ -57,10 +58,10 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   const renameSession = useSessionStore((s) => s.renameSession)
   const addToast = useUIStore((s) => s.addToast)
   const sidebarOpen = useUIStore((s) => s.sidebarOpen)
-  const toggleSidebar = useUIStore((s) => s.toggleSidebar)
   const activeTabId = useTabStore((s) => s.activeTabId)
   const tabs = useTabStore((s) => s.tabs)
   const chatSessions = useChatStore((s) => s.sessions)
+  const currentMode = useModeStore((s) => s.currentMode)
   const closeTab = useTabStore((s) => s.closeTab)
   const disconnectSession = useChatStore((s) => s.disconnectSession)
   const [searchQuery, setSearchQuery] = useState('')
@@ -106,15 +107,19 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
   }, [contextMenu, projectContextMenu, projectHeaderMenu, projectHeaderSubmenu])
 
   const filteredSessions = useMemo(() => {
-    let result = sessions
+    let result = sessions.filter((session) => (session.mode ?? 'code') === currentMode)
     if (searchQuery) {
       const q = searchQuery.toLowerCase()
       result = result.filter((s) => s.title.toLowerCase().includes(q))
     }
     return result
-  }, [sessions, searchQuery])
+  }, [currentMode, sessions, searchQuery])
 
-  const projectGroups = useMemo(() => groupByProject(filteredSessions, projectSortBy), [filteredSessions, projectSortBy])
+  const isCodeMode = currentMode === 'code'
+  const projectGroups = useMemo(
+    () => isCodeMode ? groupByProject(filteredSessions, projectSortBy) : [],
+    [filteredSessions, isCodeMode, projectSortBy],
+  )
   const orderedProjectGroups = useMemo(
     () => applyProjectOrder(projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy),
     [projectGroups, projectOrder, pinnedProjectKeys, projectOrganization, projectSortBy],
@@ -274,8 +279,18 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
 
   const createSessionForWorkDir = useCallback(async (workDir?: string) => {
     try {
-      const sessionId = await useSessionStore.getState().createSession(workDir)
-      restoreHiddenProjectForWorkDir(workDir)
+      const projectWorkDir = workDir?.trim() ? workDir : undefined
+      const mode = projectWorkDir ? 'code' : currentMode
+      if (projectWorkDir) {
+        useModeStore.getState().setCurrentMode('code')
+      }
+      const sessionId = await useSessionStore.getState().createSession(
+        projectWorkDir,
+        { mode },
+      )
+      if (mode === 'code') {
+        restoreHiddenProjectForWorkDir(projectWorkDir)
+      }
       useTabStore.getState().openTab(sessionId, t('sidebar.newSession'))
       useChatStore.getState().connectToSession(sessionId)
       closeMobileDrawer()
@@ -285,7 +300,13 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
         message: error instanceof Error ? error.message : t('sidebar.sessionListFailed'),
       })
     }
-  }, [addToast, closeMobileDrawer, restoreHiddenProjectForWorkDir, t])
+  }, [addToast, closeMobileDrawer, currentMode, restoreHiddenProjectForWorkDir, t])
+
+  const openNewSessionPage = useCallback(() => {
+    useSessionStore.getState().setActiveSession(null)
+    useTabStore.setState({ activeTabId: null })
+    closeMobileDrawer()
+  }, [closeMobileDrawer])
 
   const openProjectHeaderMenu = useCallback((event: React.MouseEvent, type: SidebarHeaderMenuType) => {
     event.stopPropagation()
@@ -610,6 +631,82 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [filteredSessionIds, handleExitBatchMode, isBatchMode, selectSessions])
 
+  const renderSessionRow = (session: SessionListItem) => (
+    <div key={session.id} className="relative mb-0.5 last:mb-0">
+      {renamingId === session.id ? (
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={handleFinishRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleFinishRename()
+            if (e.key === 'Escape') {
+              setRenamingId(null)
+              setRenameValue('')
+            }
+          }}
+          className="w-full rounded-[var(--radius-md)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none"
+        />
+      ) : (
+        <button
+          onClick={(event) => {
+            if (isBatchMode) {
+              handleBatchSessionClick(event, session.id)
+              return
+            }
+            useTabStore.getState().openTab(session.id, session.title)
+            useChatStore.getState().connectToSession(session.id)
+            closeMobileDrawer()
+          }}
+          onContextMenu={(e) => handleContextMenu(e, session.id)}
+          className={`
+            group/session w-full rounded-lg px-2.5 ${isMobile ? 'py-3' : 'py-1.5'} text-left text-[13px] transition-[background,filter,color] duration-200
+            ${selectedSessionIds.has(session.id)
+              ? 'sidebar-session-row--selected bg-[var(--color-sidebar-item-active)] text-[var(--color-text-primary)]'
+              : session.id === activeTabId
+              ? 'sidebar-session-row--active bg-[var(--color-sidebar-item-active)] text-[var(--color-text-primary)]'
+              : 'sidebar-session-row--idle text-[var(--color-text-secondary)] hover:bg-[var(--color-sidebar-item-hover)] hover:text-[var(--color-text-primary)]'
+            }
+          `}
+          aria-pressed={isBatchMode ? selectedSessionIds.has(session.id) : undefined}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            {isBatchMode ? (
+              <span
+                className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
+                  selectedSessionIds.has(session.id)
+                    ? 'border-[var(--color-brand)] bg-[var(--color-brand)] text-white'
+                    : 'border-[var(--color-border)] bg-[var(--color-surface)]'
+                }`}
+                aria-hidden="true"
+              >
+                {selectedSessionIds.has(session.id) && (
+                  <span className="material-symbols-outlined text-[12px]">check</span>
+                )}
+              </span>
+            ) : null}
+            <span className="min-w-0 flex-1 truncate font-medium tracking-normal">{session.title || 'Untitled'}</span>
+            {(session.mode ?? 'code') === 'code' && !session.workDirExists && (
+              <span
+                className="flex-shrink-0 text-[10px] text-[var(--color-warning)]"
+                title={session.workDir ?? ''}
+              >
+                {t('sidebar.missingDir')}
+              </span>
+            )}
+            <SessionRowMeta
+              isRunning={runningSessionIds.has(session.id)}
+              isWorktree={(session.mode ?? 'code') === 'code' && isWorktreeSession(session)}
+              modifiedAt={session.modifiedAt}
+              t={t}
+            />
+          </span>
+        </button>
+      )}
+    </div>
+  )
+
   return (
     <aside
       onMouseDown={handleSidebarDrag}
@@ -617,30 +714,19 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
       data-state={expanded ? 'open' : 'closed'}
       aria-label="Sidebar"
     >
-      <div className={`px-3 pb-2 ${isTauri && !isWindows ? 'pt-[44px]' : 'pt-3'}`}>
-        <div className={`flex ${expanded ? 'items-center justify-between gap-3' : 'flex-col items-center gap-2'}`}>
-          <div className={`flex min-w-0 items-center ${expanded ? 'gap-2.5' : 'justify-center'}`}>
-            <img src="/app-icon.png" alt="" className="h-8 w-8 flex-shrink-0" />
-            <span
-              className={`sidebar-copy ${expanded ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} text-[13px] font-semibold tracking-tight text-[var(--color-text-primary)]`}
-              style={{ fontFamily: 'var(--font-headline)' }}
-            >
-              Claude Code <span className="text-[var(--color-primary-container)]">Haha</span>
-            </span>
-          </div>
-          <div className={`flex items-center ${expanded ? 'gap-1.5' : 'flex-col gap-2'}`}>
-            <a
-              href="https://github.com/NanmiCoder/cc-haha"
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`sidebar-copy ${expanded ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} inline-flex items-center justify-center rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]`}
-              title="GitHub"
-              tabIndex={expanded ? undefined : -1}
-              aria-hidden={!expanded}
-            >
-              <GitHubIcon />
-            </a>
-            {isMobile ? (
+      {isMobile ? (
+        <div className={`px-3 pb-2 ${isTauri && !isWindows ? 'pt-[44px]' : 'pt-3'}`}>
+          <div className={`flex ${expanded ? 'items-center justify-between gap-3' : 'flex-col items-center gap-2'}`}>
+            <div className={`flex min-w-0 items-center ${expanded ? 'gap-2.5' : 'justify-center'}`}>
+              <img src="/app-icon.png" alt="" className="h-8 w-8 flex-shrink-0" />
+              <span
+                className={`sidebar-copy ${expanded ? 'sidebar-copy--visible' : 'sidebar-copy--hidden'} text-[13px] font-semibold tracking-normal text-[var(--color-text-primary)]`}
+                style={{ fontFamily: 'var(--font-headline)' }}
+              >
+                Claude Code <span className="text-[var(--color-primary-container)]">Haha</span>
+              </span>
+            </div>
+            <div className={`flex items-center ${expanded ? 'gap-1.5' : 'flex-col gap-2'}`}>
               <button
                 type="button"
                 onClick={closeMobileDrawer}
@@ -650,21 +736,10 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
               >
                 <span className="material-symbols-outlined text-[20px]">close</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={toggleSidebar}
-                data-testid={expanded ? 'sidebar-collapse-button' : 'sidebar-expand-button'}
-                className={`sidebar-toggle-button ${expanded ? 'sidebar-toggle-button--open h-8 w-8' : 'sidebar-toggle-button--collapsed h-8 w-8'} flex items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-surface-sidebar)]`}
-                aria-label={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
-                title={expanded ? t('sidebar.collapse') : t('sidebar.expand')}
-              >
-                <SidebarToggleIcon collapsed={!expanded} />
-              </button>
-            )}
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
 
       <div className={`px-3 pb-3 flex flex-col ${expanded ? 'gap-0.5' : 'items-center gap-2'}`}>
         <NavItem
@@ -672,13 +747,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
           collapsed={!expanded}
           label={t('sidebar.newSession')}
           touchFriendly={isMobile}
-          onClick={() => {
-            const currentTabId = useTabStore.getState().activeTabId
-            const currentSession = currentTabId
-              ? useSessionStore.getState().sessions.find((s) => s.id === currentTabId)
-              : null
-            void createSessionForWorkDir(currentSession?.workDir || currentSession?.projectRoot || undefined)
-          }}
+          onClick={openNewSessionPage}
           icon={<PlusIcon />}
         >
           {t('sidebar.newSession')}
@@ -819,7 +888,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                   {searchQuery ? t('sidebar.noMatching') : t('sidebar.noSessions')}
                 </div>
               )}
-              {orderedProjectGroups.length > 0 && (
+              {isCodeMode && orderedProjectGroups.length > 0 && (
                 <ProjectHeaderActions
                   title={t('sidebar.projects')}
                   menuLabel={t('sidebar.projectMenu')}
@@ -828,7 +897,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                   onOpenCreate={(event) => openProjectHeaderMenu(event, 'create')}
                 />
               )}
-              {visibleProjectGroups.map((project) => {
+              {isCodeMode && visibleProjectGroups.map((project) => {
                 const projectCollapsed = collapsedProjectKeys.has(project.key)
                 const sessionsExpanded = expandedProjectKeys.has(project.key)
                 const visibleItems = projectCollapsed
@@ -934,81 +1003,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                           className={hasInternalScroll ? 'max-h-[420px] overflow-y-auto pr-1' : undefined}
                           data-testid={`sidebar-project-session-list-${domSafeProjectKey(project.key)}`}
                         >
-                          {visibleItems.map((session) => (
-                            <div key={session.id} className="relative mb-0.5 last:mb-0">
-                              {renamingId === session.id ? (
-                                <input
-                                  autoFocus
-                                  value={renameValue}
-                                  onChange={(e) => setRenameValue(e.target.value)}
-                                  onBlur={handleFinishRename}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') handleFinishRename()
-                                    if (e.key === 'Escape') {
-                                      setRenamingId(null)
-                                      setRenameValue('')
-                                    }
-                                  }}
-                                  className="w-full rounded-[var(--radius-md)] border border-[var(--color-border-focus)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none"
-                                />
-                              ) : (
-                                <button
-                                  onClick={(event) => {
-                                    if (isBatchMode) {
-                                      handleBatchSessionClick(event, session.id)
-                                      return
-                                    }
-                                    useTabStore.getState().openTab(session.id, session.title)
-                                    useChatStore.getState().connectToSession(session.id)
-                                    closeMobileDrawer()
-                                  }}
-                                  onContextMenu={(e) => handleContextMenu(e, session.id)}
-                                  className={`
-                                    group/session w-full rounded-lg px-2.5 ${isMobile ? 'py-3' : 'py-1.5'} text-left text-[13px] transition-[background,filter,color] duration-200
-                                    ${selectedSessionIds.has(session.id)
-                                      ? 'sidebar-session-row--selected bg-[var(--color-sidebar-item-active)] text-[var(--color-text-primary)]'
-                                      : session.id === activeTabId
-                                      ? 'sidebar-session-row--active bg-[var(--color-sidebar-item-active)] text-[var(--color-text-primary)]'
-                                      : 'sidebar-session-row--idle text-[var(--color-text-secondary)] hover:bg-[var(--color-sidebar-item-hover)] hover:text-[var(--color-text-primary)]'
-                                    }
-                                  `}
-                                  aria-pressed={isBatchMode ? selectedSessionIds.has(session.id) : undefined}
-                                >
-                                  <span className="flex min-w-0 items-center gap-2">
-                                    {isBatchMode ? (
-                                      <span
-                                        className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
-                                          selectedSessionIds.has(session.id)
-                                            ? 'border-[var(--color-brand)] bg-[var(--color-brand)] text-white'
-                                            : 'border-[var(--color-border)] bg-[var(--color-surface)]'
-                                        }`}
-                                        aria-hidden="true"
-                                      >
-                                        {selectedSessionIds.has(session.id) && (
-                                          <span className="material-symbols-outlined text-[12px]">check</span>
-                                        )}
-                                      </span>
-                                    ) : null}
-                                    <span className="min-w-0 flex-1 truncate font-medium tracking-normal">{session.title || 'Untitled'}</span>
-                                    {!session.workDirExists && (
-                                      <span
-                                        className="flex-shrink-0 text-[10px] text-[var(--color-warning)]"
-                                        title={session.workDir ?? ''}
-                                      >
-                                        {t('sidebar.missingDir')}
-                                      </span>
-                                    )}
-                                    <SessionRowMeta
-                                      isRunning={runningSessionIds.has(session.id)}
-                                      isWorktree={isWorktreeSession(session)}
-                                      modifiedAt={session.modifiedAt}
-                                      t={t}
-                                    />
-                                  </span>
-                                </button>
-                              )}
-                            </div>
-                          ))}
+                          {visibleItems.map((session) => renderSessionRow(session))}
                         </div>
                         {(hiddenCount > 0 || sessionsExpanded) && (
                           <div className="mt-2 flex justify-start px-2.5">
@@ -1032,6 +1027,7 @@ export function Sidebar({ isMobile = false, onRequestClose }: SidebarProps) {
                   </section>
                 )
               })}
+              {!isCodeMode && filteredSessions.map((session) => renderSessionRow(session))}
             </div>
           </div>
         </>
@@ -1911,14 +1907,6 @@ function formatRelativeTime(
   return new Intl.DateTimeFormat(undefined, { month: 'numeric', day: 'numeric' }).format(date)
 }
 
-function GitHubIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-    </svg>
-  )
-}
-
 function PlusIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1946,20 +1934,3 @@ function SearchIcon() {
   )
 }
 
-function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
-  return (
-    <svg
-      width={collapsed ? 16 : 14}
-      height={collapsed ? 16 : 14}
-      viewBox="0 0 14 14"
-      fill="none"
-      className={`sidebar-toggle-icon ${collapsed ? 'sidebar-toggle-icon--collapsed' : 'sidebar-toggle-icon--open'}`}
-      aria-hidden="true"
-    >
-      <path
-        d={collapsed ? 'M5 3 9 7l-4 4' : 'M9 3 5 7l4 4'}
-        className="sidebar-toggle-chevron"
-      />
-    </svg>
-  )
-}

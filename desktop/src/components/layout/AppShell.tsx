@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type HTMLAttributes } from 'react'
+import { useEffect, useRef, useState, type HTMLAttributes, type ReactNode } from 'react'
+import { ArrowLeft, ArrowRight, Folder, FolderOpen, PanelLeft, SquareTerminal } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { ContentRouter } from './ContentRouter'
 import { ToastContainer } from '../shared/Toast'
 import { UpdateChecker } from '../shared/UpdateChecker'
+import { ModeSelector } from '../../modes/ModeSelector'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useUIStore, type SettingsTab } from '../../stores/uiStore'
 import { useKeyboardShortcuts } from '../../hooks/useKeyboardShortcuts'
@@ -12,7 +14,6 @@ import {
   isH5ConnectionRequiredError,
   isTauriRuntime,
 } from '../../lib/desktopRuntime'
-import { TabBar } from './TabBar'
 import { StartupErrorView } from './StartupErrorView'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useChatStore } from '../../stores/chatStore'
@@ -21,6 +22,9 @@ import { useTranslation } from '../../i18n'
 import { H5ConnectionView } from './H5ConnectionView'
 import { useMobileViewport } from '../../hooks/useMobileViewport'
 import type { Tab } from '../../stores/tabStore'
+import { WindowControls } from './WindowControls'
+import { useWorkspacePanelStore } from '../../stores/workspacePanelStore'
+import { useTerminalPanelStore } from '../../stores/terminalPanelStore'
 
 function isChatTab(tab: Tab | undefined) {
   return tab?.type === 'session'
@@ -49,6 +53,18 @@ export function AppShell() {
   const effectiveSidebarOpen = isMobileShell ? mobileSidebarOpen : sidebarOpen
   const activeTab = tabs.find((tab) => tab.sessionId === activeTabId)
   const isActiveChatTab = isChatTab(activeTab)
+  const activeSessionMode = activeSession?.mode ?? 'code'
+  const showCodeSessionTools = !isMobileShell && isActiveChatTab && activeSessionMode === 'code' && !!activeTabId
+  const isWorkbenchOpen = useWorkspacePanelStore((state) =>
+    showCodeSessionTools && activeTabId ? state.isPanelOpen(activeTabId) : false,
+  )
+  const workbenchMode = useWorkspacePanelStore((state) =>
+    showCodeSessionTools && activeTabId ? state.getMode(activeTabId) : 'workspace',
+  )
+  const isWorkspacePanelOpen = isWorkbenchOpen && workbenchMode === 'workspace'
+  const isTerminalPanelOpen = useTerminalPanelStore((state) =>
+    showCodeSessionTools && activeTabId ? state.isPanelOpen(activeTabId) : false,
+  )
   const mobileSessionTitle = activeSession?.title || activeTab?.title || t('session.untitled')
   const mobileSessionUpdated = (() => {
     if (!activeSession?.modifiedAt) return ''
@@ -194,7 +210,14 @@ export function AppShell() {
   }
 
   return (
-    <div className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface)]${isMobileShell ? ' app-shell--mobile' : ''}`}>
+    <div className={`app-shell app-shell-viewport flex overflow-hidden bg-[var(--color-surface-sidebar)]${isMobileShell ? ' app-shell--mobile' : ''}`}>
+      {!isMobileShell ? (
+        <DesktopTopBar
+          sidebarOpen={effectiveSidebarOpen}
+          onToggleSidebar={toggleEffectiveSidebar}
+          t={t}
+        />
+      ) : null}
       {isMobileShell && effectiveSidebarOpen ? (
         <button
           type="button"
@@ -209,7 +232,7 @@ export function AppShell() {
         data-testid="sidebar-shell"
         data-state={effectiveSidebarOpen ? 'open' : 'closed'}
         data-mobile={isMobileShell ? 'true' : 'false'}
-        className={`sidebar-shell${isMobileShell ? ' sidebar-shell--mobile' : ''}`}
+        className={`sidebar-shell${isMobileShell ? ' sidebar-shell--mobile' : ' sidebar-shell--desktop'}`}
         {...sidebarHiddenProps}
       >
         {!isMobileShell || effectiveSidebarOpen ? (
@@ -219,7 +242,7 @@ export function AppShell() {
       <main
         id="content-area"
         data-sidebar-state={effectiveSidebarOpen ? 'open' : 'closed'}
-        className={`min-w-0 flex-1 flex flex-col overflow-hidden${isMobileShell ? ' app-shell-main--mobile' : ''}`}
+        className={`min-w-0 flex-1 flex flex-col overflow-hidden${isMobileShell ? ' app-shell-main--mobile' : ' app-shell-main--desktop'}`}
       >
         {isMobileShell ? (
           <div
@@ -268,11 +291,175 @@ export function AppShell() {
             ) : null}
           </div>
         ) : null}
-        {!isMobileShell ? <TabBar /> : null}
+        {!isMobileShell ? (
+          <ContentSurfaceHeader
+            activeSessionId={showCodeSessionTools ? activeTabId : null}
+            isWorkspacePanelOpen={isWorkspacePanelOpen}
+            isTerminalPanelOpen={isTerminalPanelOpen}
+            t={t}
+          />
+        ) : null}
         <ContentRouter />
       </main>
       <ToastContainer />
       <UpdateChecker />
     </div>
+  )
+}
+
+function DesktopTopBar({
+  sidebarOpen,
+  onToggleSidebar,
+  t,
+}: {
+  sidebarOpen: boolean
+  onToggleSidebar: () => void
+  t: ReturnType<typeof useTranslation>
+}) {
+  return (
+    <div
+      data-tauri-drag-region
+      className="desktop-topbar absolute inset-x-0 top-0 z-50 flex h-[var(--app-topbar-height)] items-center justify-center select-none"
+    >
+      <div className="absolute left-3 top-0 flex h-full items-center gap-2">
+        <TopBarIconButton
+          label={sidebarOpen ? t('sidebar.collapse') : t('sidebar.expand')}
+          onClick={onToggleSidebar}
+          icon={<PanelLeft size={17} strokeWidth={1.8} />}
+        />
+        <TopBarIconButton
+          label="Back"
+          disabled
+          onClick={() => undefined}
+          icon={<ArrowLeft size={18} strokeWidth={1.75} />}
+        />
+        <TopBarIconButton
+          label="Forward"
+          disabled
+          onClick={() => undefined}
+          icon={<ArrowRight size={18} strokeWidth={1.75} />}
+        />
+      </div>
+      <ModeSelector />
+      <div className="desktop-window-controls-host absolute right-0 top-0 flex h-full items-stretch">
+        <WindowControls />
+      </div>
+    </div>
+  )
+}
+
+function ContentSurfaceHeader({
+  activeSessionId,
+  isWorkspacePanelOpen,
+  isTerminalPanelOpen,
+  t,
+}: {
+  activeSessionId: string | null
+  isWorkspacePanelOpen: boolean
+  isTerminalPanelOpen: boolean
+  t: ReturnType<typeof useTranslation>
+}) {
+  const toggleWorkspacePanel = () => {
+    if (!activeSessionId) return
+    const workbench = useWorkspacePanelStore.getState()
+    if (workbench.isPanelOpen(activeSessionId) && workbench.getMode(activeSessionId) === 'workspace') {
+      workbench.closePanel(activeSessionId)
+      return
+    }
+    workbench.setMode(activeSessionId, 'workspace')
+    workbench.openPanel(activeSessionId)
+  }
+
+  const toggleTerminalPanel = () => {
+    if (!activeSessionId) return
+    useTerminalPanelStore.getState().togglePanel(activeSessionId)
+  }
+
+  return (
+    <div
+      data-tauri-drag-region
+      className="content-surface-header relative flex h-10 shrink-0 items-center justify-end select-none"
+    >
+      {activeSessionId ? (
+        <div className="absolute right-4 top-0 flex h-full items-center gap-3">
+          <HeaderIconButton
+            label={t('tabs.openTerminal')}
+            onClick={toggleTerminalPanel}
+            active={isTerminalPanelOpen}
+            icon={<SquareTerminal size={16} strokeWidth={2} />}
+          />
+          <HeaderIconButton
+            label={t(isWorkspacePanelOpen ? 'tabs.hideWorkspace' : 'tabs.showWorkspace')}
+            onClick={toggleWorkspacePanel}
+            active={isWorkspacePanelOpen}
+            icon={isWorkspacePanelOpen
+              ? <FolderOpen size={16} strokeWidth={2} />
+              : <Folder size={16} strokeWidth={2} />}
+          />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function TopBarIconButton({
+  icon,
+  label,
+  onClick,
+  disabled = false,
+  active = false,
+}: {
+  icon: ReactNode
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  active?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+        disabled
+          ? 'cursor-default text-[var(--color-text-tertiary)]/45'
+          : active
+            ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] shadow-sm'
+            : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]'
+      }`}
+    >
+      {icon}
+    </button>
+  )
+}
+
+function HeaderIconButton({
+  icon,
+  label,
+  onClick,
+  active = false,
+}: {
+  icon: ReactNode
+  label: string
+  onClick: () => void
+  active?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      data-active={active ? 'true' : 'false'}
+      className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] ${
+        active
+          ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)] shadow-sm'
+          : 'text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]'
+      }`}
+    >
+      {icon}
+    </button>
   )
 }
